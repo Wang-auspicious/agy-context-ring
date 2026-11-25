@@ -262,29 +262,32 @@ function postJsonHttp(addr, pathStr, headers, bodyObj, timeoutMs = 2500) {
 
 function refreshLsConversations(force = false) {
   if (lsFetchPromise) return lsFetchPromise;
-  if (!force && Date.now() - lastLsFetchAt < 1200) return Promise.resolve();
+  if (!force && Date.now() - lastLsFetchAt < 1500) return Promise.resolve();
   const lsAddr = normalizeLsAddr(process.env.ANTIGRAVITY_LS_ADDRESS);
   const csrf = process.env.ANTIGRAVITY_CSRF_TOKEN?.trim();
   if (!lsAddr) return Promise.resolve();
 
   lsFetchPromise = (async () => {
     try {
-      const res = await postJsonHttp(
-        lsAddr,
-        "/product.v1.ConversationService/ListConversations",
-        {
+      const resp = await fetch(`http://${lsAddr}/product.v1.ConversationService/ListConversations`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
           "Connect-Protocol-Version": "1",
           ...(csrf ? { "x-antigravity-csrf-token": csrf } : {}),
         },
-        { pageSize: 20, includeArchived: false },
-        2500
-      );
-      if (res.ok && Array.isArray(res.data?.conversations)) {
-        cachedLsConvs = res.data.conversations;
-        lastLsFetchAt = Date.now();
-        broadcastAll();
-      } else if (!res.ok) {
-        console.error("[claude-context-ring] ListConversations failed:", res.status || "", res.error || "");
+        body: JSON.stringify({ pageSize: 20, includeArchived: false }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (Array.isArray(data?.conversations)) {
+          cachedLsConvs = data.conversations;
+          lastLsFetchAt = Date.now();
+          broadcastAll();
+        }
+      } else {
+        console.error("[claude-context-ring] ListConversations HTTP:", resp.status);
       }
     } catch (e) {
       console.error("[claude-context-ring] ListConversations exception:", e.message);
