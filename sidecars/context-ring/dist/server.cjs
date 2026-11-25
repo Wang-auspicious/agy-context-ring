@@ -18,6 +18,7 @@ const TOKEN =
 const UI_HTML_PATH = path.resolve(__dirname, "..", "ui.html");
 const DATA_DIR = path.join(getAppDataDir(), "sidecar_data", "claude-context-ring");
 const SETTINGS_PATH = path.join(DATA_DIR, "settings.json");
+const COMPACT_STATE_PATH = path.join(DATA_DIR, "compact-state.json");
 
 const MAX_MANAGED_SESSIONS = 10;
 
@@ -401,6 +402,7 @@ function parseTranscriptFast(convId, windowSize) {
     let userTurns = 0;
     let compactions = 0;
     let firstUserText = "";
+    let compactedSinceLastPlanner = false;
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -413,18 +415,25 @@ function parseTranscriptFast(convId, windowSize) {
       }
       if (obj.type === "USER_INPUT") {
         userTurns++;
-        if (!firstUserText && typeof obj.content === "string") {
-          firstUserText = obj.content
+        if (typeof obj.content === "string") {
+          const clean = obj.content
             .replace(/<\/?USER_REQUEST>/gi, " ")
             .replace(/\s+/g, " ")
-            .trim()
-            .slice(0, 48);
+            .trim();
+          if (clean === "/compact") {
+            compactedSinceLastPlanner = true;
+          }
+          if (!firstUserText) {
+            firstUserText = clean.slice(0, 48);
+          }
         }
       }
       if (typeof obj.content === "string" && obj.content.includes("CHECKPOINT: Resuming from a compaction")) {
         compactions++;
+        compactedSinceLastPlanner = true;
       }
       if (obj.type === "PLANNER_RESPONSE") {
+        compactedSinceLastPlanner = false;
         const inp = Number(obj.input_tokens) || 0;
         const cache = Number(obj.cache_read_tokens) || 0;
         const out = Number(obj.output_tokens) || 0;
@@ -439,11 +448,11 @@ function parseTranscriptFast(convId, windowSize) {
         };
       }
     }
-    rawStats = { latestPlanner, prevPlanner, userTurns, compactions, firstUserText };
+    rawStats = { latestPlanner, prevPlanner, userTurns, compactions, firstUserText, compactedSinceLastPlanner };
     transcriptCache.set(convId, { mtimeMs: st.mtimeMs, parsed: rawStats });
   }
 
-  const { latestPlanner, prevPlanner, userTurns, compactions, firstUserText } = rawStats;
+  const { latestPlanner, prevPlanner, userTurns, compactions, firstUserText, compactedSinceLastPlanner } = rawStats;
   const totalTokens = latestPlanner ? latestPlanner.contextTokens : 0;
   const deltaTokens =
     latestPlanner && prevPlanner ? latestPlanner.contextTokens - prevPlanner.contextTokens : 0;
@@ -490,6 +499,7 @@ function parseTranscriptFast(convId, windowSize) {
     deltaTokens,
     model: latestPlanner?.model || null,
     stepIndex: latestPlanner?.stepIndex ?? null,
+    compactedSinceLastPlanner: Boolean(compactedSinceLastPlanner),
     firstUserText,
     stats: { userTurns, compactions },
     categories,
@@ -505,7 +515,37 @@ function parseTranscriptFast(convId, windowSize) {
   };
 }
 
-const compactState = new Map();
+function loadCompactState() {
+  const map = new Map();
+  try {
+    if (fs.existsSync(COMPACT_STATE_PATH)) {
+      const obj = JSON.parse(fs.readFileSync(COMPACT_STATE_PATH, "utf-8"));
+      if (obj && typeof obj === "object") {
+        for (const [k, v] of Object.entries(obj)) {
+          if (isValidId(k) && v && typeof v === "object") {
+            map.set(k, v.status === "running" ? { ...v, status: "sent" } : v);
+          }
+        }
+      }
+    }
+  } catch {}
+  return map;
+}
+
+function saveCompactState(map) {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const entries = Array.from(map.entries()).slice(-50);
+    fs.writeFileSync(COMPACT_STATE_PATH, JSON.stringify(Object.fromEntries(entries), null, 2), "utf-8");
+  } catch {}
+}
+
+const compactState = loadCompactState();
+
+function setCompactState(convId, entry) {
+  compactState.set(convId, entry);
+  saveCompactState(compactState);
+}
 
 async function triggerCompact(convId, stepIndex, reason = "manual") {
   if (!isValidId(convId)) return { ok: false, error: "Invalid conversationId" };
@@ -517,7 +557,7 @@ async function triggerCompact(convId, stepIndex, reason = "manual") {
   const csrf = process.env.ANTIGRAVITY_CSRF_TOKEN?.trim();
   if (!lsAddr) return { ok: false, error: "ANTIGRAVITY_LS_ADDRESS not set" };
 
-  compactState.set(convId, { status: "running", lastStep: stepIndex, lastAt: Date.now(), reason, error: null });
+  setCompactState(convId, { status: "running", lastStep: stepIndex, lastAt: Date.now(), reason, error: null });
   try {
     const resp = await fetch(`http://${lsAddr}/exa.language_server_pb.LanguageServerService/SendUserCascadeMessage`, {
       method: "POST",
@@ -543,16 +583,16 @@ async function triggerCompact(convId, stepIndex, reason = "manual") {
       signal: AbortSignal.timeout(15000),
     });
     if (resp.ok) {
-      compactState.set(convId, { status: "sent", lastStep: stepIndex, lastAt: Date.now(), reason, error: null });
+      setCompactState(convId, { status: "sent", lastStep: stepIndex, lastAt: Date.now(), reason, error: null });
       return { ok: true };
     }
     const errText = await resp.text().catch(() => "");
     const msg = `HTTP ${resp.status}${errText ? `: ${errText.slice(0, 120)}` : ""}`;
-    compactState.set(convId, { status: "error", lastStep: stepIndex, lastAt: Date.now(), reason, error: msg });
+    setCompactState(convId, { status: "error", lastStep: stepIndex, lastAt: Date.now(), reason, error: msg });
     return { ok: false, error: msg };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    compactState.set(convId, { status: "error", lastStep: stepIndex, lastAt: Date.now(), reason, error: msg });
+    setCompactState(convId, { status: "error", lastStep: stepIndex, lastAt: Date.now(), reason, error: msg });
     return { ok: false, error: msg };
   }
 }
@@ -601,15 +641,21 @@ function buildSnapshotSync(primaryConvId) {
     const justStopped = prevRunState === "RUN_STATE_RUNNING" && !isRunning;
 
     const cs = compactState.get(c.id) || null;
+    const sameStepAlreadyCompacted = cs && cs.lastStep === parsed.stepIndex;
+    const inCooldown = cs && cs.lastAt && Date.now() - cs.lastAt < 120000;
+    const canAutoTrigger = justStopped || c.id === primaryConvId;
 
     if (
       settings.autoCompactEnabled &&
       !isRunning &&
+      canAutoTrigger &&
       parsed.found &&
+      !parsed.compactedSinceLastPlanner &&
       parsed.totalTokens >= thresholdTokens &&
       parsed.stepIndex != null &&
       cs?.status !== "running" &&
-      (justStopped || (cs?.lastStep !== parsed.stepIndex && (!cs?.lastAt || Date.now() - cs.lastAt > 30000)))
+      !sameStepAlreadyCompacted &&
+      !inCooldown
     ) {
       triggerCompact(c.id, parsed.stepIndex, justStopped ? "auto_on_idle" : "auto").catch(() => {});
     }
