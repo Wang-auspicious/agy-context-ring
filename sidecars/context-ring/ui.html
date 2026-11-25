@@ -22,7 +22,7 @@
       --cds-alpha-2: rgba(11, 11, 11, 0.08);
       --cds-border-strong: rgba(11, 11, 11, 0.2);
       --cds-ring-color: rgba(11, 11, 11, 0.1);
-      --cds-shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.08);
+      --cds-shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.10), 0 2px 6px rgba(0, 0, 0, 0.06);
 
       --cds-fill-accent: #257de0;
       --cds-fill-warning: #fbb315;
@@ -31,11 +31,10 @@
       --cds-chart-categorical-1: #257de0;
       --cds-chart-categorical-2: #f47230;
       --cds-chart-categorical-3: #00b894;
-      --cds-chart-muted: #c2c2c2;
       --cds-chart-reference-tint: rgba(135, 135, 135, 0.15);
 
       --cds-pill-bg: #f3f3f1;
-      --cds-pill-bg-hover: #e9e9e5;
+      --cds-pill-bg-hover: #e7e7e3;
       --cds-btn-bg: rgba(11, 11, 11, 0.05);
       --cds-btn-bg-hover: rgba(11, 11, 11, 0.09);
       --radius-xl: 0.75rem;
@@ -58,7 +57,6 @@
         --cds-chart-categorical-1: #338ced;
         --cds-chart-categorical-2: #e76624;
         --cds-chart-categorical-3: #00a888;
-        --cds-chart-muted: #383838;
 
         --cds-pill-bg: rgba(255, 255, 255, 0.08);
         --cds-pill-bg-hover: rgba(255, 255, 255, 0.14);
@@ -148,7 +146,6 @@
       cursor: pointer;
     }
 
-    /* Toggle Switch */
     .switch {
       position: relative;
       display: inline-block;
@@ -182,7 +179,7 @@
     .sessions-list {
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 8px;
       width: 100%;
       max-width: 360px;
       margin: 0 auto;
@@ -193,16 +190,25 @@
       background: var(--cds-surface-popover);
       border-radius: var(--radius-xl);
       box-shadow: var(--cds-shadow-popover), inset 0 0 0 1px var(--cds-ring-color);
-      padding: 8px 0;
+      padding: 6px 0;
+      transition: box-shadow 180ms ease, background-color 180ms ease;
     }
 
-    /* Session Identity Row matching user's screenshot */
+    /* Subtle visual distinction for the current conversation pinned #1 */
+    .popover-card.is-current {
+      background: color-mix(in srgb, var(--cds-fill-accent) 4%, var(--cds-surface-popover));
+      box-shadow: var(--cds-shadow-popover), inset 0 0 0 1px color-mix(in srgb, var(--cds-fill-accent) 28%, var(--cds-ring-color));
+    }
+
+    /* Clickable Session Header */
     .session-head {
       display: flex;
       align-items: center;
-      gap: 6px;
-      padding: 4px 12px 6px 14px;
+      gap: 5px;
+      padding: 4px 10px 4px 12px;
       min-width: 0;
+      cursor: pointer;
+      user-select: none;
     }
 
     .session-icon {
@@ -210,17 +216,6 @@
       height: 14px;
       color: var(--cds-text-primary);
       flex-shrink: 0;
-    }
-
-    .session-title {
-      font-size: 12.5px;
-      font-weight: 500;
-      color: var(--cds-text-primary);
-      flex: 1;
-      min-width: 0;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
     }
 
     .run-dot {
@@ -231,63 +226,90 @@
       flex-shrink: 0;
     }
 
-    /* Clickable Folder+SessionId Pill (copies relative jsonl path) */
-    .session-pill {
+    .session-title {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--cds-text-primary);
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Non-clickable Folder Pill */
+    .folder-pill {
+      background: var(--cds-pill-bg);
+      color: var(--cds-text-secondary);
+      font-size: 10.5px;
+      padding: 2px 6px;
+      border-radius: 5px;
+      max-width: 78px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex-shrink: 0;
+      pointer-events: none;
+    }
+
+    /* Clickable JSONL Pill */
+    .json-pill {
       border: none;
       background: var(--cds-pill-bg);
       color: var(--cds-text-secondary);
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 11px;
-      padding: 2px 7px;
+      font-size: 10.5px;
+      padding: 2px 6px;
       border-radius: 5px;
-      max-width: 130px;
       white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
       cursor: pointer;
       flex-shrink: 0;
       transition: background 120ms ease, color 120ms ease;
     }
-    .session-pill:hover {
+    .json-pill:hover {
       background: var(--cds-pill-bg-hover);
       color: var(--cds-text-primary);
     }
 
     /* Ring Trigger */
-    .ring-trigger {
+    .ring-wrap {
       display: inline-flex;
       align-items: center;
       gap: 4px;
-      height: 24px;
-      padding: 0 5px;
-      border: none;
-      border-radius: 6px;
-      background: transparent;
+      padding-left: 2px;
       color: var(--cds-text-secondary);
-      cursor: pointer;
       flex-shrink: 0;
-    }
-    .ring-trigger:hover {
-      background: var(--cds-btn-bg);
-      color: var(--cds-text-primary);
     }
     .ring-trigger-pct { font-size: 11.5px; font-weight: 500; }
     .ring-svg { display: block; transform: rotate(-90deg); }
     .ring-arc { transition: stroke-dashoffset 300ms ease, stroke 200ms ease; }
 
-    .card-body.collapsed { display: none; }
+    /* Smooth Accordion Body */
+    .card-body-wrap {
+      display: grid;
+      grid-template-rows: 1fr;
+      opacity: 1;
+      transition: grid-template-rows 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease;
+    }
+    .card-body-wrap.collapsed {
+      grid-template-rows: 0fr;
+      opacity: 0;
+    }
+    .card-body-inner {
+      overflow: hidden;
+    }
 
     .popover-header {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 2px 16px 4px;
+      padding: 4px 14px 4px;
       font-size: 12px;
       color: var(--cds-text-secondary);
     }
     .popover-summary { margin-left: auto; }
 
-    .popover-body { padding: 2px 16px 6px; }
+    .popover-body { padding: 2px 14px 6px; }
 
     .meter-track {
       position: relative;
@@ -340,12 +362,12 @@
 
     .divider {
       height: 1px;
-      margin: 6px 16px;
+      margin: 6px 14px;
       background: var(--cds-alpha-2);
     }
 
     .compact-row {
-      padding: 3px 16px;
+      padding: 3px 14px 4px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -370,13 +392,17 @@
       font-weight: 500;
       padding: 3px 8px;
       cursor: pointer;
+      transition: background 120ms ease, opacity 120ms ease;
     }
     .compact-btn:hover:not(:disabled) { background: var(--cds-btn-bg-hover); }
-    .compact-btn:disabled { opacity: 0.55; cursor: default; }
+    .compact-btn:disabled {
+      opacity: 0.38;
+      color: var(--cds-text-muted);
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
-  <!-- Global Window & Auto-Compact Settings -->
   <div class="settings-bar">
     <div class="settings-row">
       <span class="settings-label">Context Window</span>
@@ -399,7 +425,7 @@
           <option value="85">85%</option>
           <option value="90">90%</option>
         </select>
-        <label class="switch" title="Enable automatic /compact when threshold is reached">
+        <label class="switch" title="Enable automatic /compact when idle and threshold reached">
           <input id="autoToggle" type="checkbox" />
           <span class="slider"></span>
         </label>
@@ -407,7 +433,6 @@
     </div>
   </div>
 
-  <!-- Multi-Session Context Cards -->
   <div id="sessionsList" class="sessions-list"></div>
 
   <script>
@@ -427,8 +452,8 @@
     const thresholdSelect = document.getElementById("thresholdSelect");
     const autoToggle = document.getElementById("autoToggle");
 
-    // Track which cards are expanded (default: running or current session expanded)
-    const expandedMap = new Map();
+    let activeExpandedId = null;
+    const cardMap = new Map();
 
     function stripDotZero(str) {
       return str.endsWith(".0") ? str.slice(0, -2) : str;
@@ -464,6 +489,7 @@
     }
 
     async function triggerCompact(targetId, btn) {
+      if (btn.disabled) return;
       const q = token ? `?token=${encodeURIComponent(token)}` : "";
       btn.disabled = true;
       btn.textContent = "Compacting…";
@@ -474,13 +500,13 @@
           body: JSON.stringify({ conversationId: targetId }),
         });
         const data = await res.json();
-        btn.textContent = data.ok ? "Sent /compact" : "Failed";
+        btn.textContent = data.ok ? "Sent!" : "Failed";
       } catch {
         btn.textContent = "Error";
       }
       setTimeout(() => {
+        btn.textContent = "Auto-compact";
         btn.disabled = false;
-        btn.textContent = "Compact";
       }, 2000);
     }
 
@@ -494,6 +520,173 @@
       updateSettings({ autoCompactEnabled: autoToggle.checked });
     });
 
+    function setExpandedSession(id) {
+      activeExpandedId = activeExpandedId === id ? null : id;
+      for (const [sid, el] of cardMap.entries()) {
+        el.querySelector(".card-body-wrap").classList.toggle("collapsed", sid !== activeExpandedId);
+      }
+    }
+
+    function createCard(s) {
+      const card = document.createElement("div");
+      card.className = "popover-card";
+      card.dataset.id = s.id;
+      card.innerHTML = `
+        <div class="session-head">
+          <svg class="session-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="2.5" y="3" width="11" height="7.5" rx="1.2"/>
+            <path d="M1.5 12.5h13"/>
+          </svg>
+          <span class="run-dot" style="display:none" title="Running"></span>
+          <span class="session-title"></span>
+          <span class="folder-pill" style="display:none"></span>
+          <button type="button" class="json-pill" title="Copy relative JSONL path"></button>
+          <span class="ring-wrap tabular-nums">
+            <svg width="14" height="14" viewBox="0 0 14 14" class="ring-svg" aria-hidden="true">
+              <circle cx="7" cy="7" r="6" fill="none" stroke-width="2" stroke="var(--cds-border-strong)"/>
+              <circle cx="7" cy="7" r="6" fill="none" stroke-width="2" stroke-dasharray="${CIRCUMFERENCE}" stroke-dashoffset="${CIRCUMFERENCE}" stroke-linecap="round" class="ring-arc"/>
+            </svg>
+            <span class="ring-trigger-pct">0%</span>
+          </span>
+        </div>
+        <div class="card-body-wrap collapsed">
+          <div class="card-body-inner">
+            <div class="popover-header">
+              <span>Context window</span>
+              <span class="popover-summary tabular-nums"></span>
+            </div>
+            <div class="popover-body">
+              <div class="meter-track"></div>
+              <div class="breakdown-list"></div>
+            </div>
+            <div class="divider"></div>
+            <div class="compact-row">
+              <span class="compact-hint tabular-nums"></span>
+              <button type="button" class="compact-btn">Auto-compact</button>
+            </div>
+          </div>
+        </div>
+      `;
+
+      card.querySelector(".session-head").addEventListener("click", (e) => {
+        if (e.target.closest(".json-pill")) return;
+        setExpandedSession(s.id);
+      });
+
+      const jsonPill = card.querySelector(".json-pill");
+      jsonPill.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const pathToCopy = jsonPill.dataset.relpath || "";
+        if (!pathToCopy) return;
+        try {
+          await navigator.clipboard.writeText(pathToCopy);
+          const orig = jsonPill.dataset.label;
+          jsonPill.textContent = "Copied!";
+          setTimeout(() => { jsonPill.textContent = orig; }, 1200);
+        } catch {}
+      });
+
+      const cBtn = card.querySelector(".compact-btn");
+      cBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        triggerCompact(s.id, cBtn);
+      });
+
+      return card;
+    }
+
+    function updateCard(card, s, win, thresholdTokens, thresholdPct) {
+      card.classList.toggle("is-current", Boolean(s.isCurrent));
+      card.querySelector(".run-dot").style.display = s.isRunning ? "inline-block" : "none";
+
+      const titleEl = card.querySelector(".session-title");
+      titleEl.textContent = s.title;
+      titleEl.title = s.title;
+
+      const folderEl = card.querySelector(".folder-pill");
+      if (s.folderName) {
+        folderEl.textContent = s.folderName;
+        folderEl.title = s.folderName;
+        folderEl.style.display = "inline-block";
+      } else {
+        folderEl.style.display = "none";
+      }
+
+      const jsonPill = card.querySelector(".json-pill");
+      const jsonLabel = `${s.shortId}.jsonl`;
+      jsonPill.dataset.relpath = s.relPath;
+      jsonPill.dataset.label = jsonLabel;
+      if (jsonPill.textContent !== "Copied!") {
+        jsonPill.textContent = jsonLabel;
+      }
+      jsonPill.title = `Click to copy: ${s.relPath}`;
+
+      const total = s.totalTokens || 0;
+      const pct = win > 0 ? Math.round(Math.max(0, Math.min(1, total / win)) * 100) : 0;
+      const summary = `${formatTokens(total)} / ${formatTokens(win)} (${pct}%)`;
+      const offset = CIRCUMFERENCE * (1 - Math.max(0, Math.min(100, pct)) / 100);
+
+      const arc = card.querySelector(".ring-arc");
+      arc.setAttribute("stroke-dashoffset", String(offset));
+      arc.setAttribute("stroke", getStrokeColor(pct));
+      card.querySelector(".ring-trigger-pct").textContent = `${pct}%`;
+
+      card.querySelector(".card-body-wrap").classList.toggle("collapsed", s.id !== activeExpandedId);
+      card.querySelector(".popover-summary").textContent = summary;
+
+      const cats = (s.categories || []).filter((c) => c.tokens > 0).sort((a, b) => b.tokens - a.tokens);
+      let startPct = 0;
+      const meterTrack = card.querySelector(".meter-track");
+      meterTrack.innerHTML = cats
+        .map((c, idx) => {
+          const w = Math.min(100 - startPct, (c.tokens / win) * 100);
+          if (w <= 0) return "";
+          const seam = idx === 0 ? 0 : 1;
+          const rS = idx === 0 ? 2 : 1;
+          const rE = idx === cats.length - 1 ? 2 : 1;
+          const html = `<div class="meter-seg" style="inset-inline-start:calc(${startPct}% + ${seam}px);width:max(2px,calc(${w}% - ${seam}px));background:${CAT_COLORS[idx % CAT_COLORS.length]};border-start-start-radius:${rS}px;border-end-start-radius:${rS}px;border-start-end-radius:${rE}px;border-end-end-radius:${rE}px"></div>`;
+          startPct += w;
+          return html;
+        })
+        .join("");
+
+      const freeTokens = Math.max(0, win - total);
+      const freePct = ((freeTokens / win) * 100).toFixed(1);
+      const rowsHtml = cats
+        .map((c, idx) => {
+          const p = ((c.tokens / win) * 100).toFixed(1);
+          return `<div class="breakdown-row">
+            <span class="breakdown-swatch" style="background:${CAT_COLORS[idx % CAT_COLORS.length]}"></span>
+            <span class="breakdown-name">${esc(c.display_name || c.name)}</span>
+            <span class="breakdown-tokens tabular-nums">${formatTokens(c.tokens)}</span>
+            <span class="breakdown-pct tabular-nums">${p}%</span>
+          </div>`;
+        })
+        .join("") +
+        `<div class="breakdown-row">
+          <span class="breakdown-swatch" style="background:var(--cds-chart-reference-tint)"></span>
+          <span class="breakdown-name">Free space</span>
+          <span class="breakdown-tokens tabular-nums">${formatTokens(freeTokens)}</span>
+          <span class="breakdown-pct tabular-nums">${freePct}%</span>
+        </div>`;
+      card.querySelector(".breakdown-list").innerHTML = rowsHtml;
+
+      const untilAuto = Math.max(0, thresholdTokens - total);
+      card.querySelector(".compact-hint").textContent =
+        untilAuto > 0
+          ? `${formatTokens(untilAuto)} until auto (${thresholdPct}%)`
+          : `Reached ${thresholdPct}% (${formatTokens(thresholdTokens)})`;
+
+      const cBtn = card.querySelector(".compact-btn");
+      if (s.isRunning) {
+        cBtn.disabled = true;
+        cBtn.title = "Conversation is running — disabled until turn finishes";
+      } else if (cBtn.textContent === "Auto-compact") {
+        cBtn.disabled = false;
+        cBtn.title = "Run /compact on this conversation";
+      }
+    }
+
     function renderSnapshot(snap) {
       const { settings, thresholdTokens, sessions } = snap;
 
@@ -503,121 +696,25 @@
       thresholdSelect.value = String(settings.autoCompactThresholdPct);
       autoToggle.checked = Boolean(settings.autoCompactEnabled);
 
-      sessionsList.innerHTML = "";
-      const win = settings.windowSize;
+      if (activeExpandedId === null && sessions.length > 0) {
+        activeExpandedId = sessions[0].id;
+      }
+
+      const activeIds = new Set(sessions.map((s) => s.id));
+      for (const [id, el] of cardMap.entries()) {
+        if (!activeIds.has(id)) {
+          el.remove();
+          cardMap.delete(id);
+        }
+      }
 
       sessions.forEach((s) => {
-        if (!expandedMap.has(s.id)) {
-          expandedMap.set(s.id, Boolean(s.isRunning || s.isCurrent));
+        let card = cardMap.get(s.id);
+        if (!card) {
+          card = createCard(s);
+          cardMap.set(s.id, card);
         }
-        const isOpen = expandedMap.get(s.id);
-        const total = s.totalTokens || 0;
-        const pct = win > 0 ? Math.round(Math.max(0, Math.min(1, total / win)) * 100) : 0;
-        const summary = `${formatTokens(total)} / ${formatTokens(win)} (${pct}%)`;
-        const offset = CIRCUMFERENCE * (1 - Math.max(0, Math.min(100, pct)) / 100);
-        const pillText = s.folderName ? `${s.folderName}-${s.shortId}` : s.shortId;
-
-        const card = document.createElement("div");
-        card.className = "popover-card";
-
-        // Build meter segments & breakdown rows
-        const cats = (s.categories || []).filter((c) => c.tokens > 0).sort((a, b) => b.tokens - a.tokens);
-        let startPct = 0;
-        const segsHtml = cats
-          .map((c, idx) => {
-            const w = Math.min(100 - startPct, (c.tokens / win) * 100);
-            if (w <= 0) return "";
-            const seam = idx === 0 ? 0 : 1;
-            const rS = idx === 0 ? 2 : 1;
-            const rE = idx === cats.length - 1 ? 2 : 1;
-            const html = `<div class="meter-seg" style="inset-inline-start:calc(${startPct}% + ${seam}px);width:max(2px,calc(${w}% - ${seam}px));background:${CAT_COLORS[idx % CAT_COLORS.length]};border-start-start-radius:${rS}px;border-end-start-radius:${rS}px;border-start-end-radius:${rE}px;border-end-end-radius:${rE}px"></div>`;
-            startPct += w;
-            return html;
-          })
-          .join("");
-
-        const rowsHtml = cats
-          .map((c, idx) => {
-            const p = ((c.tokens / win) * 100).toFixed(1);
-            return `<div class="breakdown-row">
-              <span class="breakdown-swatch" style="background:${CAT_COLORS[idx % CAT_COLORS.length]}"></span>
-              <span class="breakdown-name">${esc(c.display_name || c.name)}</span>
-              <span class="breakdown-tokens tabular-nums">${formatTokens(c.tokens)}</span>
-              <span class="breakdown-pct tabular-nums">${p}%</span>
-            </div>`;
-          })
-          .join("");
-
-        const freeTokens = Math.max(0, win - total);
-        const freePct = ((freeTokens / win) * 100).toFixed(1);
-        const freeRowHtml = `<div class="breakdown-row">
-          <span class="breakdown-swatch" style="background:var(--cds-chart-reference-tint)"></span>
-          <span class="breakdown-name">Free space</span>
-          <span class="breakdown-tokens tabular-nums">${formatTokens(freeTokens)}</span>
-          <span class="breakdown-pct tabular-nums">${freePct}%</span>
-        </div>`;
-
-        const untilAuto = Math.max(0, thresholdTokens - total);
-        const compactText =
-          untilAuto > 0
-            ? `${formatTokens(untilAuto)} until auto (${settings.autoCompactThresholdPct}%)`
-            : `Reached ${settings.autoCompactThresholdPct}% (${formatTokens(thresholdTokens)})`;
-
-        card.innerHTML = `
-          <div class="session-head">
-            <svg class="session-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <rect x="2.5" y="3" width="11" height="7.5" rx="1.2"/>
-              <path d="M1.5 12.5h13"/>
-            </svg>
-            ${s.isRunning ? '<span class="run-dot" title="Running"></span>' : ""}
-            <span class="session-title" title="${esc(s.title)}">${esc(s.title)}</span>
-            <button type="button" class="session-pill" title="Click to copy: ${esc(s.relPath)}">${esc(pillText)}</button>
-            <button type="button" class="ring-trigger tabular-nums" title="Toggle details · ${esc(summary)}">
-              <svg width="14" height="14" viewBox="0 0 14 14" class="ring-svg" aria-hidden="true">
-                <circle cx="7" cy="7" r="6" fill="none" stroke-width="2" stroke="var(--cds-border-strong)"/>
-                <circle cx="7" cy="7" r="6" fill="none" stroke-width="2" stroke-dasharray="${CIRCUMFERENCE}" stroke-dashoffset="${offset}" stroke-linecap="round" stroke="${getStrokeColor(pct)}" class="ring-arc"/>
-              </svg>
-              <span class="ring-trigger-pct">${pct}%</span>
-            </button>
-          </div>
-          <div class="card-body ${isOpen ? "" : "collapsed"}">
-            <div class="popover-header">
-              <span>Context window</span>
-              <span class="popover-summary tabular-nums">${summary}</span>
-            </div>
-            <div class="popover-body">
-              <div class="meter-track">${segsHtml}</div>
-              <div class="breakdown-list">${rowsHtml}${freeRowHtml}</div>
-            </div>
-            <div class="divider"></div>
-            <div class="compact-row">
-              <span class="compact-hint tabular-nums">${compactText}</span>
-              <button type="button" class="compact-btn">Compact</button>
-            </div>
-          </div>
-        `;
-
-        // Copy relative JSONL path on pill click
-        const pillBtn = card.querySelector(".session-pill");
-        pillBtn.addEventListener("click", async () => {
-          try {
-            await navigator.clipboard.writeText(s.relPath);
-            pillBtn.textContent = "Copied!";
-            setTimeout(() => { pillBtn.textContent = pillText; }, 1200);
-          } catch {}
-        });
-
-        // Toggle card body on ring click
-        card.querySelector(".ring-trigger").addEventListener("click", () => {
-          const next = !expandedMap.get(s.id);
-          expandedMap.set(s.id, next);
-          card.querySelector(".card-body").classList.toggle("collapsed", !next);
-        });
-
-        // Real /compact execution
-        const cBtn = card.querySelector(".compact-btn");
-        cBtn.addEventListener("click", () => triggerCompact(s.id, cBtn));
-
+        updateCard(card, s, settings.windowSize, thresholdTokens, settings.autoCompactThresholdPct);
         sessionsList.appendChild(card);
       });
     }

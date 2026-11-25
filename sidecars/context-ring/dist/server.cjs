@@ -97,14 +97,16 @@ function runAgentApi(args, timeoutMs = 15000) {
   });
 }
 
-// Fast non-blocking caches
 let cachedLsConvs = [];
 let lsConvsFetching = false;
-const metadataCache = new Map(); // convId -> { ts, fetching, info: { folderName, folderPath, branch } }
-const transcriptCache = new Map(); // convId -> { mtimeMs, parsed }
+let lastLsFetchAt = 0;
+const metadataCache = new Map();
+const transcriptCache = new Map();
+const prevRunStateMap = new Map(); // convId -> previous runState
 
-async function refreshLsConversations() {
+async function refreshLsConversations(force = false) {
   if (lsConvsFetching) return;
+  if (!force && Date.now() - lastLsFetchAt < 1500) return;
   const lsAddr = process.env.ANTIGRAVITY_LS_ADDRESS?.trim();
   const csrf = process.env.ANTIGRAVITY_CSRF_TOKEN?.trim();
   if (!lsAddr) return;
@@ -118,12 +120,14 @@ async function refreshLsConversations() {
         ...(csrf ? { "x-antigravity-csrf-token": csrf } : {}),
       },
       body: JSON.stringify({ pageSize: 20, includeArchived: false }),
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(2500),
     });
     if (resp.ok) {
       const json = await resp.json();
       if (Array.isArray(json.conversations)) {
         cachedLsConvs = json.conversations;
+        lastLsFetchAt = Date.now();
+        broadcastAll();
       }
     }
   } catch {}
@@ -158,6 +162,7 @@ function ensureWorkspaceInfoAsync(convId) {
       branch = ws?.branchName || "";
     }
     metadataCache.set(convId, { ts: Date.now(), fetching: false, info: { folderName, folderPath, branch } });
+    broadcastAll();
   });
 
   return fallback;
@@ -187,8 +192,9 @@ function listBrainFallback() {
 }
 
 function parseTranscriptFast(convId, windowSize) {
-  const relPath = `brain/${convId}/.system_generated/logs/transcript.jsonl`;
-  const fullPath = path.join(getAppDataDir(), relPath);
+  // Expanded relative path without private user home (e.g. zjz65)
+  const relPath = `.gemini/antigravity/brain/${convId}/.system_generated/logs/transcript.jsonl`;
+  const fullPath = path.join(getAppDataDir(), "brain", convId, ".system_generated", "logs", "transcript.jsonl");
   let st;
   try {
     st = fs.statSync(fullPath);
@@ -201,6 +207,7 @@ function parseTranscriptFast(convId, windowSize) {
       deltaTokens: 0,
       model: null,
       stepIndex: null,
+      firstUserText: "",
       stats: { userTurns: 0, compactions: 0 },
       categories: [],
     };
@@ -217,6 +224,7 @@ function parseTranscriptFast(convId, windowSize) {
     let prevPlanner = null;
     let userTurns = 0;
     let compactions = 0;
+    let firstUserText = "";
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -227,7 +235,12 @@ function parseTranscriptFast(convId, windowSize) {
       } catch {
         continue;
       }
-      if (obj.type === "USER_INPUT") userTurns++;
+      if (obj.type === "USER_INPUT") {
+        userTurns++;
+        if (!firstUserText && typeof obj.content === "string") {
+          firstUserText = obj.content.replace(/\s+/g, " ").trim().slice(0, 48);
+        }
+      }
       if (typeof obj.content === "string" && obj.content.includes("CHECKPOINT: Resuming from a compaction")) {
         compactions++;
       }
@@ -246,11 +259,11 @@ function parseTranscriptFast(convId, windowSize) {
         };
       }
     }
-    rawStats = { latestPlanner, prevPlanner, userTurns, compactions };
+    rawStats = { latestPlanner, prevPlanner, userTurns, compactions, firstUserText };
     transcriptCache.set(convId, { mtimeMs: st.mtimeMs, parsed: rawStats });
   }
 
-  const { latestPlanner, prevPlanner, userTurns, compactions } = rawStats;
+  const { latestPlanner, prevPlanner, userTurns, compactions, firstUserText } = rawStats;
   const totalTokens = latestPlanner ? latestPlanner.contextTokens : 0;
   const cacheTokens = latestPlanner ? latestPlanner.cacheReadTokens : 0;
   const inputTokens = latestPlanner ? latestPlanner.inputTokens : 0;
@@ -267,6 +280,7 @@ function parseTranscriptFast(convId, windowSize) {
     deltaTokens,
     model: latestPlanner?.model || null,
     stepIndex: latestPlanner?.stepIndex ?? null,
+    firstUserText,
     stats: { userTurns, compactions },
     categories: [
       { name: "cache_read", display_name: "Cached context", tokens: cacheTokens },
@@ -294,14 +308,11 @@ async function triggerCompact(convId, stepIndex, reason = "manual") {
   return { ok: false, error: res.error || "Failed to send /compact" };
 }
 
-// Synchronous, 0ms snapshot builder (triggers background LS/metadata refresh without blocking)
 function buildSnapshotSync(primaryConvId) {
-  refreshLsConversations();
+  refreshLsConversations(false);
   const rawList = cachedLsConvs.length > 0 ? cachedLsConvs : listBrainFallback();
 
-  const running = rawList.filter((c) => c.state?.runState === "RUN_STATE_RUNNING");
-  const others = rawList.filter((c) => c.state?.runState !== "RUN_STATE_RUNNING");
-
+  // Always pin primaryConvId (current conversation) FIRST, then running, then recent
   const selected = [];
   const seen = new Set();
   const add = (c) => {
@@ -310,12 +321,14 @@ function buildSnapshotSync(primaryConvId) {
     selected.push(c);
   };
 
-  for (const c of running) add(c);
   if (primaryConvId && isValidId(primaryConvId)) {
     const match = rawList.find((c) => c.id === primaryConvId);
-    add(match || { id: primaryConvId, annotations: { title: "Current Session" }, state: { runState: "RUN_STATE_RUNNING" } });
+    add(match || { id: primaryConvId, annotations: { title: "" }, state: { runState: "RUN_STATE_IDLE" } });
   }
-  for (const c of others) {
+  for (const c of rawList) {
+    if (c.state?.runState === "RUN_STATE_RUNNING") add(c);
+  }
+  for (const c of rawList) {
     if (selected.length >= 6) break;
     add(c);
   }
@@ -325,20 +338,32 @@ function buildSnapshotSync(primaryConvId) {
   const sessions = selected.map((c) => {
     const ws = ensureWorkspaceInfoAsync(c.id);
     const parsed = parseTranscriptFast(c.id, settings.windowSize);
-    const title = c.annotations?.title?.trim() || c.state?.summary?.trim() || `Session ${c.id.slice(0, 8)}`;
-    const isRunning = c.state?.runState === "RUN_STATE_RUNNING";
+    const title =
+      c.annotations?.title?.trim() ||
+      c.state?.summary?.trim() ||
+      parsed.firstUserText ||
+      `Conversation ${c.id.slice(0, 8)}`;
+
+    const runState = c.state?.runState || "RUN_STATE_IDLE";
+    const isRunning = runState === "RUN_STATE_RUNNING";
+    const prevRunState = prevRunStateMap.get(c.id);
+    prevRunStateMap.set(c.id, runState);
+    const justStopped = prevRunState === "RUN_STATE_RUNNING" && !isRunning;
+
     const cs = compactState.get(c.id) || null;
 
+    // Claude-aligned auto-compact: NEVER interrupt an active turn;
+    // fire immediately when idle (or the instant a running turn stops) if >= threshold!
     if (
       settings.autoCompactEnabled &&
+      !isRunning &&
       parsed.found &&
       parsed.totalTokens >= thresholdTokens &&
       parsed.stepIndex != null &&
-      cs?.lastStep !== parsed.stepIndex &&
       cs?.status !== "running" &&
-      (!cs?.lastAt || Date.now() - cs.lastAt > 30000)
+      (justStopped || (cs?.lastStep !== parsed.stepIndex && (!cs?.lastAt || Date.now() - cs.lastAt > 30000)))
     ) {
-      triggerCompact(c.id, parsed.stepIndex, "auto").catch(() => {});
+      triggerCompact(c.id, parsed.stepIndex, justStopped ? "auto_on_idle" : "auto").catch(() => {});
     }
 
     return {
@@ -346,7 +371,7 @@ function buildSnapshotSync(primaryConvId) {
       shortId: c.id.slice(0, 8),
       title,
       isRunning,
-      runState: c.state?.runState || "RUN_STATE_IDLE",
+      runState,
       folderName: ws.folderName,
       folderPath: ws.folderPath,
       branch: ws.branch,
@@ -411,8 +436,7 @@ function broadcastAll() {
   }
 }
 
-// Kick off initial LS fetch on startup and poll every 1s
-refreshLsConversations();
+refreshLsConversations(true);
 setInterval(() => {
   if (sseClients.size > 0) broadcastAll();
 }, 1000).unref();
@@ -471,6 +495,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === "/api/context") {
+    await refreshLsConversations(false);
     const snap = buildSnapshotSync(convId);
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", ...NO_CACHE });
     res.end(JSON.stringify(snap));
@@ -500,6 +525,13 @@ const server = http.createServer(async (req, res) => {
   if (pathname === "/api/compact" && req.method === "POST") {
     const body = await readJsonBody(req);
     const targetId = (typeof body.conversationId === "string" ? body.conversationId.trim() : "") || convId;
+    const snap = buildSnapshotSync(convId);
+    const target = snap.sessions.find((s) => s.id === targetId);
+    if (target?.isRunning) {
+      res.writeHead(409, { "Content-Type": "application/json; charset=utf-8", ...NO_CACHE });
+      res.end(JSON.stringify({ ok: false, error: "Cannot compact while conversation is running" }));
+      return;
+    }
     const parsed = parseTranscriptFast(targetId, settings.windowSize);
     const result = await triggerCompact(targetId, parsed.stepIndex, "manual");
     broadcastAll();
