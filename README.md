@@ -2,15 +2,19 @@
 
 **Real-time context window ring, token breakdown, and idle-guarded auto-compact sidecar plugin for Google Antigravity.**
 
-`agy-context-ring` brings an interactive, multi-session context-window monitor directly into Antigravity's Auxiliary Side Pane. It streams live token usage from your running and recent Antigravity conversations, breaks down exact context overhead (`Messages`, `System tools`, `MCP tools`, `Skills`, `System prompt`, `Memory files`, `Autocompact buffer`, `MCP tools (deferred)`), and safely triggers `/compact` only when an agent turn is idle.
+`agy-context-ring` brings an interactive, multi-session context-window monitor directly into Antigravity's Auxiliary Side Pane. It tracks live token usage across your active and recent Antigravity conversations, breaks down exact context overhead (`Messages`, `System tools`, `MCP tools`, `Skills`, `System prompt`, `Memory files`, `Autocompact buffer`, `MCP tools (deferred)`), and safely triggers `/compact` only when an agent turn finishes and transitions to idle.
+
+<p align="center">
+  <img src="assets/preview.png" alt="agy-context-ring preview" width="420" />
+</p>
 
 ---
 
 ## Features
 
-- **Multi-Session Live Monitoring (SSE)**
-  - Automatically discovers all running (`RUN_STATE_RUNNING`) and recent Antigravity conversations via `ConversationService/ListConversations` (with local `brain/` fallback).
-  - Always pins the current conversation at the top with a subtle accent highlight, shows Antigravity's 2×2 animated running indicator for active agents, and supports smooth accordion switching across up to 20 sessions.
+- **Multi-Session Live Monitoring**
+  - Automatically discovers running (`RUN_STATE_RUNNING`) and recent Antigravity conversations via `ConversationService/ListConversations` (with local `brain/` fallback).
+  - Always pins the current conversation at the top with a subtle accent highlight, shows Antigravity's 2×2 running indicator for active agents, displays 5 sessions by default (expandable up to the 10 most recent conversations), and uses visibility-aware polling + `BroadcastChannel` sync so multiple panes never saturate HTTP/1.1 connection limits.
 - **Exact Real-Time Token Breakdown**
   - Reads `PLANNER_RESPONSE` (`input_tokens + cache_read_tokens + output_tokens`) from each session's `transcript.jsonl`.
   - Measures actual local environment overhead on disk:
@@ -18,11 +22,10 @@
     - **Memory files**: Active `AGENTS.md` rule files with expandable per-file token counts.
     - **MCP tools & deferred schemas**: Scans `~/.gemini/antigravity/mcp/<server>/*.json` for deferred tool counts and schema sizes, with an expandable per-server breakdown.
     - **Messages**: Remainder of real billed tokens after overhead, so the breakdown always sums to the exact session total.
-- **Idle-Guarded Auto-Compact & Model-Aware Window Scaling**
-  - Switchable context window scale (`Auto` | `256K` | `512K` | `840K` | `1M`) and configurable auto-compact threshold (`50%`–`90%`, default `60%`), persisted in `~/.gemini/antigravity/sidecar_data/claude-context-ring/settings.json`.
-  - In `Auto` mode, automatically uses Antigravity's real per-model compaction limits (`512K` for Gemini 4 Neon/Hydrogen/Carbon/Argon, `840K` for Claude Opus/Sonnet 5.5, `256K` for Gemini 3.8 Flash, `128K` for Gemini 2.5).
+- **Model-Aware `Auto` Window & Idle-Guarded Auto-Compact**
+  - Always follows Antigravity's real underlying per-model context limit (`512K` for Gemini 4 Neon/Hydrogen/Carbon/Argon, `840K` for Claude Opus/Sonnet 5.5, `256K` for Gemini 3.8 Flash, `128K` for Gemini 2.5) with configurable auto-compact threshold (`50%`–`90%`, default `60%`).
   - **Turn-safe compaction**: While an agent is actively running (`RUN_STATE_RUNNING`), the `Auto-compact` button is disabled (`cursor: not-allowed`) with a `"Cannot compact while the agent is running"` tooltip.
-  - When Auto-compact is enabled and a conversation exceeds the threshold, `/compact` is automatically dispatched via `LanguageServerService/SendUserCascadeMessage` (`SLASH_COMMAND_TYPE_SYSTEM`) **the moment the turn transitions to idle**.
+  - When Auto-compact is enabled and an active conversation exceeds the threshold, `/compact` is dispatched via `LanguageServerService/SendUserCascadeMessage` (`SLASH_COMMAND_TYPE_SYSTEM`) **the moment the turn transitions to idle**, protected by a persistent step lock (`compact-state.json`), `CHECKPOINT` detection, and a 180-second cooldown so it never loops.
 - **One-Click History Path Copy**
   - Each session header displays its workspace folder pill (non-clickable) and `<shortId>.jsonl` pill. Clicking the `.jsonl` pill copies the relative path `.gemini/antigravity/brain/<conversationId>/.system_generated/logs/transcript.jsonl` to your clipboard.
 - **Zero External Dependencies**
