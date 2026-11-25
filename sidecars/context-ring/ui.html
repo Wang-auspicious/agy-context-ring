@@ -526,6 +526,7 @@
           <option value="50">50%</option>
           <option value="60">60%</option>
           <option value="75">75%</option>
+          <option value="80">80%</option>
           <option value="85">85%</option>
           <option value="90">90%</option>
         </select>
@@ -554,9 +555,21 @@
       "muted": "var(--cds-muted)",
     };
 
+    const bootstrap = window.__SIDECAR_BOOTSTRAP__ || {};
     const params = new URLSearchParams(window.location.search);
-    const convId = params.get("conversationId") || "";
-    const token = params.get("token") || "";
+    const convId = params.get("conversationId") || params.get("conversation_id") || bootstrap.conversationId || "";
+    const token = params.get("token") || bootstrap.token || "";
+
+    function apiUrl(relPath, extraParams) {
+      const u = new URL(relPath, window.location.href);
+      if (token) u.searchParams.set("token", token);
+      if (extraParams) {
+        for (const [k, v] of Object.entries(extraParams)) {
+          if (v) u.searchParams.set(k, v);
+        }
+      }
+      return u.toString();
+    }
 
     const sessionsList = document.getElementById("sessionsList");
     const windowAutoBadge = document.getElementById("windowAutoBadge");
@@ -570,7 +583,10 @@
     const showMoreBtn = document.getElementById("showMoreBtn");
     showMoreBtn.addEventListener("click", () => {
       showAllSessions = !showAllSessions;
-      fetchContextOnce();
+      if (lastSnapshot) {
+        try { renderSnapshot(lastSnapshot); } catch {}
+      }
+      pollNow(true);
     });
 
     function stripDotZero(str) {
@@ -598,23 +614,30 @@
     }
 
     async function updateSettings(patch) {
-      const q = token ? `?token=${encodeURIComponent(token)}` : "";
-      await fetch(`/api/settings${q}`, {
+      const res = await fetch(apiUrl("./api/settings"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { "X-Sidecar-Token": token } : {}),
+        },
         body: JSON.stringify(patch),
       });
+      if (res.ok) {
+        pollNow(true);
+      }
     }
 
     async function triggerCompact(targetId, btn) {
       if (btn.disabled) return;
-      const q = token ? `?token=${encodeURIComponent(token)}` : "";
       btn.disabled = true;
       btn.textContent = "Compacting…";
       try {
-        const res = await fetch(`/api/compact${q}`, {
+        const res = await fetch(apiUrl("./api/compact"), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { "X-Sidecar-Token": token } : {}),
+          },
           body: JSON.stringify({ conversationId: targetId }),
         });
         const data = await res.json();
@@ -625,6 +648,7 @@
       setTimeout(() => {
         btn.textContent = "Auto-compact";
         btn.disabled = false;
+        pollNow(true);
       }, 2000);
     }
 
@@ -854,9 +878,11 @@
 
       const untilAuto = Math.max(0, thresholdTokens - total);
       card.querySelector(".compact-hint").textContent =
-        untilAuto > 0
-          ? `${formatTokens(untilAuto)} until auto (${thresholdPct}%)`
-          : `Reached ${thresholdPct}% (${formatTokens(thresholdTokens)})`;
+        s.compactedSinceLastPlanner
+          ? "Compacted · awaiting next turn"
+          : untilAuto > 0
+            ? `${formatTokens(untilAuto)} until auto (${thresholdPct}%)`
+            : `Reached ${thresholdPct}% (${formatTokens(thresholdTokens)})`;
 
       const cBtn = card.querySelector(".compact-btn");
       const cWrap = card.querySelector(".compact-btn-wrap");
@@ -868,14 +894,30 @@
       }
     }
 
+    function ensureThresholdOption(pct) {
+      const val = String(pct);
+      for (const opt of thresholdSelect.options) {
+        if (opt.value === val) return;
+      }
+      const opt = document.createElement("option");
+      opt.value = val;
+      opt.textContent = `${val}%`;
+      thresholdSelect.appendChild(opt);
+    }
+
+    let lastSnapshot = null;
+
     function renderSnapshot(snap) {
+      lastSnapshot = snap;
       const ph = sessionsList.querySelector(".loading-placeholder");
       if (ph) ph.remove();
-      const { settings, thresholdTokens, sessions } = snap;
+      const settings = snap.settings || {};
+      const sessions = Array.isArray(snap.sessions) ? snap.sessions : [];
 
       const primaryWin = sessions[0]?.windowSize;
       windowAutoBadge.textContent = primaryWin ? `Auto · ${formatTokens(primaryWin).toUpperCase()}` : "Auto (AGY)";
-      thresholdSelect.value = String(settings.autoCompactThresholdPct);
+      ensureThresholdOption(settings.autoCompactThresholdPct || 60);
+      thresholdSelect.value = String(settings.autoCompactThresholdPct || 60);
       autoToggle.checked = Boolean(settings.autoCompactEnabled);
 
       const DEFAULT_VISIBLE = 5;
@@ -906,49 +948,135 @@
           cardMap.set(s.id, card);
         }
         const sWin = s.windowSize || settings.windowSize || 512000;
-        const sThresh = s.thresholdTokens || Math.round(sWin * (settings.autoCompactThresholdPct / 100));
-        updateCard(card, s, sWin, sThresh, settings.autoCompactThresholdPct);
+        const sThresh = s.thresholdTokens || Math.round(sWin * ((settings.autoCompactThresholdPct || 60) / 100));
+        updateCard(card, s, sWin, sThresh, settings.autoCompactThresholdPct || 60);
         sessionsList.appendChild(card);
       });
     }
 
-    let eventSource = null;
+    // Use short-lived, visibility-aware HTTP/1.1 polling instead of long-lived SSE
+    // so multiple Antigravity conversation panes never exhaust Chromium's 6-socket
+    // per-origin limit on plugin:// / localhost:<gateway>.
+    let pollTimer = null;
+    let pollAbort = null;
+    let consecutiveFailures = 0;
+    let hasRenderedOnce = false;
+    const syncChannel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("agy-context-ring") : null;
 
-    async function fetchContextOnce() {
-      try {
-        const q = new URLSearchParams();
-        if (convId) q.set("conversationId", convId);
-        if (token) q.set("token", token);
-        const res = await fetch(`/api/context?${q.toString()}`, { cache: "no-store" });
-        if (res.ok) {
-          renderSnapshot(await res.json());
-          return true;
+    if (syncChannel) {
+      syncChannel.onmessage = (ev) => {
+        const msg = ev.data;
+        if (!msg || typeof msg !== "object" || !Array.isArray(msg.sessions)) return;
+        // Only apply shared global snapshot if it shares the same primaryConvId (or we have none)
+        if (!convId || msg.primaryConvId === convId) {
+          try {
+            renderSnapshot(msg);
+            hasRenderedOnce = true;
+          } catch {}
         }
-      } catch {}
-      setTimeout(fetchContextOnce, 1000);
-      return false;
-    }
-
-    function connectSSE() {
-      if (eventSource) eventSource.close();
-      const q = new URLSearchParams();
-      if (convId) q.set("conversationId", convId);
-      if (token) q.set("token", token);
-      eventSource = new EventSource(`/api/events?${q.toString()}`);
-      eventSource.onmessage = (ev) => {
-        try {
-          renderSnapshot(JSON.parse(ev.data));
-        } catch {}
       };
     }
 
-    document.getElementById("refreshBtn").addEventListener("click", () => {
-      fetchContextOnce();
-      connectSSE();
+    function showLoadingStatus(message) {
+      if (hasRenderedOnce) return;
+      const ph = sessionsList.querySelector(".loading-placeholder");
+      if (!ph) return;
+      ph.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;"><span>${esc(message)}</span><button type="button" class="compact-btn retry-inline-btn">Retry</button></div>`;
+      const rBtn = ph.querySelector(".retry-inline-btn");
+      if (rBtn) rBtn.addEventListener("click", () => pollNow(true));
+    }
+
+    function scheduleNextPoll(delayMs) {
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+      }
+      if (document.visibilityState === "hidden") return;
+      pollTimer = setTimeout(() => pollNow(false), delayMs);
+    }
+
+    async function pollNow(forceAbort = false) {
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+      }
+      if (document.visibilityState === "hidden" && !forceAbort) return;
+      if (pollAbort) {
+        if (!forceAbort) return; // single-flight: avoid overlapping poll storms
+        try { pollAbort.abort(); } catch {}
+      }
+
+      const ctrl = new AbortController();
+      pollAbort = ctrl;
+      const timeoutId = setTimeout(() => ctrl.abort(), 5000);
+      let nextDelay = 2500;
+
+      try {
+        const res = await fetch(apiUrl("./api/context", convId ? { conversationId: convId } : null), {
+          cache: "no-store",
+          signal: ctrl.signal,
+          headers: token ? { "X-Sidecar-Token": token } : {},
+        });
+        if (res.ok) {
+          const snap = await res.json();
+          renderSnapshot(snap);
+          hasRenderedOnce = true;
+          consecutiveFailures = 0;
+          if (syncChannel) {
+            try { syncChannel.postMessage(snap); } catch {}
+          }
+          const anyRunning = Array.isArray(snap.sessions) && snap.sessions.some((s) => s.isRunning);
+          nextDelay = anyRunning ? 1400 : 2800;
+        } else {
+          consecutiveFailures++;
+          nextDelay = Math.min(5000, 1200 * consecutiveFailures);
+          if (res.status === 401) {
+            showLoadingStatus("Session token expired (HTTP 401). Close and reopen Context Ring.");
+          } else {
+            showLoadingStatus(`Waiting for sidecar (HTTP ${res.status})…`);
+          }
+        }
+      } catch (err) {
+        if (err && err.name === "AbortError" && pollAbort !== ctrl) {
+          return; // superseded by newer forced poll
+        }
+        consecutiveFailures++;
+        nextDelay = Math.min(5000, 1200 * consecutiveFailures);
+        if (consecutiveFailures >= 2) {
+          showLoadingStatus(
+            err && err.name === "AbortError"
+              ? "Sidecar request timed out. Retrying…"
+              : "Connecting to Antigravity sidecar…"
+          );
+        }
+      } finally {
+        clearTimeout(timeoutId);
+        if (pollAbort === ctrl) pollAbort = null;
+      }
+
+      scheduleNextPoll(nextDelay);
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+        if (pollAbort) { try { pollAbort.abort(); } catch {} pollAbort = null; }
+      } else {
+        pollNow(true);
+      }
     });
 
-    fetchContextOnce();
-    connectSSE();
+    window.addEventListener("pagehide", () => {
+      if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+      if (pollAbort) { try { pollAbort.abort(); } catch {} pollAbort = null; }
+      if (syncChannel) { try { syncChannel.close(); } catch {} }
+    });
+
+    document.getElementById("refreshBtn").addEventListener("click", () => {
+      pollNow(true);
+    });
+
+    pollNow(true);
   </script>
 </body>
 </html>

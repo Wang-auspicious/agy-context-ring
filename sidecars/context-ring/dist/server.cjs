@@ -279,6 +279,7 @@ function refreshLsConversations(force = false) {
   if (!lsAddr) return Promise.resolve();
 
   lsFetchPromise = (async () => {
+    let ok = false;
     try {
       const resp = await fetch(`http://${lsAddr}/product.v1.ConversationService/ListConversations`, {
         method: "POST",
@@ -294,8 +295,13 @@ function refreshLsConversations(force = false) {
         const data = await resp.json();
         if (Array.isArray(data?.conversations)) {
           cachedLsConvs = data.conversations;
+          ok = true;
           lastLsFetchAt = Date.now();
-          broadcastAll();
+          if (sseClients.size > 0) {
+            broadcastAll();
+          } else {
+            buildSnapshotSync(process.env.ANTIGRAVITY_CONVERSATION_ID?.trim() || "");
+          }
         }
       } else {
         console.error("[claude-context-ring] ListConversations HTTP:", resp.status);
@@ -303,6 +309,10 @@ function refreshLsConversations(force = false) {
     } catch (e) {
       console.error("[claude-context-ring] ListConversations exception:", e.message);
     } finally {
+      if (!ok) {
+        // Back off ~5s on transient failure so 1s pollers don't storm LS.
+        lastLsFetchAt = Date.now() + 3500;
+      }
       lsFetchPromise = null;
     }
   })();
@@ -310,37 +320,75 @@ function refreshLsConversations(force = false) {
   return lsFetchPromise;
 }
 
+const wsPendingQueue = [];
+let wsInFlightCount = 0;
+
+function drainWorkspaceQueue() {
+  while (wsInFlightCount < 2 && wsPendingQueue.length > 0) {
+    const convId = wsPendingQueue.shift();
+    const entry = metadataCache.get(convId);
+    if (!entry) continue;
+    const fallback = entry.info || { folderName: "", folderPath: "", branch: "", isSubagent: false };
+    wsInFlightCount++;
+    runAgentApi(["get-conversation-metadata", convId], 4000)
+      .then((res) => {
+        let folderName = fallback.folderName;
+        let folderPath = fallback.folderPath;
+        let branch = fallback.branch;
+        let isSubagent = Boolean(fallback.isSubagent);
+        let resolved = false;
+        if (res.ok && res.data) {
+          const meta =
+            res.data.response?.conversationMetadata?.metadata ||
+            res.data.conversationMetadata?.metadata ||
+            {};
+          const ws = Array.isArray(meta.workspaces) && meta.workspaces[0];
+          const uri =
+            ws?.workspaceFolderAbsoluteUri ||
+            (Array.isArray(meta.workspaceUris) && meta.workspaceUris[0]) ||
+            "";
+          if (uri) {
+            try {
+              folderPath = decodeURIComponent(uri.replace(/^file:\/\/\/?/, ""));
+              folderName = path.basename(folderPath) || folderPath;
+            } catch {
+              folderName = uri;
+            }
+          }
+          branch = ws?.branchName || "";
+          isSubagent = Boolean(
+            meta.subagentSpec ||
+              meta.parentConversationId ||
+              (meta.rootConversationId && meta.rootConversationId !== convId)
+          );
+          resolved = true;
+        }
+        metadataCache.set(convId, {
+          ts: Date.now(),
+          ttlMs: resolved && folderPath ? 1800000 : 60000,
+          fetching: false,
+          info: { folderName, folderPath, branch, isSubagent },
+        });
+        broadcastAll();
+      })
+      .finally(() => {
+        wsInFlightCount--;
+        drainWorkspaceQueue();
+      });
+  }
+}
+
 function ensureWorkspaceInfoAsync(convId) {
-  if (!isValidId(convId)) return { folderName: "", folderPath: "", branch: "" };
+  if (!isValidId(convId)) return { folderName: "", folderPath: "", branch: "", isSubagent: false };
   const entry = metadataCache.get(convId);
-  if (entry && (entry.fetching || Date.now() - entry.ts < 120000)) {
+  const ttl = entry?.ttlMs || 120000;
+  if (entry && (entry.fetching || Date.now() - entry.ts < ttl)) {
     return entry.info;
   }
-  const fallback = entry?.info || { folderName: "", folderPath: "", branch: "" };
-  metadataCache.set(convId, { ts: entry?.ts || 0, fetching: true, info: fallback });
-
-  runAgentApi(["get-conversation-metadata", convId], 4000).then((res) => {
-    let folderName = fallback.folderName;
-    let folderPath = fallback.folderPath;
-    let branch = fallback.branch;
-    if (res.ok && res.data) {
-      const meta = res.data.response?.conversationMetadata?.metadata || res.data.conversationMetadata?.metadata || {};
-      const ws = Array.isArray(meta.workspaces) && meta.workspaces[0];
-      const uri = ws?.workspaceFolderAbsoluteUri || (Array.isArray(meta.workspaceUris) && meta.workspaceUris[0]) || "";
-      if (uri) {
-        try {
-          folderPath = decodeURIComponent(uri.replace(/^file:\/\/\/?/, ""));
-          folderName = path.basename(folderPath) || folderPath;
-        } catch {
-          folderName = uri;
-        }
-      }
-      branch = ws?.branchName || "";
-    }
-    metadataCache.set(convId, { ts: Date.now(), fetching: false, info: { folderName, folderPath, branch } });
-    broadcastAll();
-  });
-
+  const fallback = entry?.info || { folderName: "", folderPath: "", branch: "", isSubagent: false };
+  metadataCache.set(convId, { ts: entry?.ts || 0, ttlMs: ttl, fetching: true, info: fallback });
+  wsPendingQueue.push(convId);
+  drainWorkspaceQueue();
   return fallback;
 }
 
@@ -367,6 +415,15 @@ function listBrainFallback() {
   return items.slice(0, 10);
 }
 
+function extractUserRequestText(rawContent) {
+  if (typeof rawContent !== "string") return "";
+  const reqMatch = rawContent.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/i);
+  const body = reqMatch
+    ? reqMatch[1]
+    : rawContent.replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, " ");
+  return body.replace(/<\/?USER_REQUEST>/gi, " ").replace(/\s+/g, " ").trim();
+}
+
 function parseTranscriptFast(convId, windowSize) {
   const relPath = `.gemini/antigravity/brain/${convId}/.system_generated/logs/transcript.jsonl`;
   const fullPath = path.join(getAppDataDir(), "brain", convId, ".system_generated", "logs", "transcript.jsonl");
@@ -378,12 +435,16 @@ function parseTranscriptFast(convId, windowSize) {
       found: false,
       relPath,
       totalTokens: 0,
+      rawPlannerTokens: 0,
       percentage: 0,
       deltaTokens: 0,
       model: null,
       stepIndex: null,
+      latestStepIndex: null,
+      compactedSinceLastPlanner: false,
+      isSubagent: false,
       firstUserText: "",
-      stats: { userTurns: 0, compactions: 0 },
+      stats: { userTurns: 0, realUserTurns: 0, compactions: 0 },
       categories: [],
       deferred: [],
       details: { mcpServers: [], memoryFiles: [], mcpTotalTokens: 0, mcpCount: 0, memoryTokens: 0, memoryCount: 0 },
@@ -392,17 +453,21 @@ function parseTranscriptFast(convId, windowSize) {
 
   const cached = transcriptCache.get(convId);
   let rawStats;
-  if (cached && cached.mtimeMs === st.mtimeMs) {
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
     rawStats = cached.parsed;
   } else {
     const raw = fs.readFileSync(fullPath, "utf-8");
     const lines = raw.split(/\r?\n/);
     let latestPlanner = null;
     let prevPlanner = null;
+    let lastCheckpoint = null;
+    let latestStepIndex = null;
     let userTurns = 0;
+    let realUserTurns = 0;
     let compactions = 0;
     let firstUserText = "";
     let compactedSinceLastPlanner = false;
+    let isSubagent = false;
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -413,24 +478,41 @@ function parseTranscriptFast(convId, windowSize) {
       } catch {
         continue;
       }
+      if (typeof obj.step_index === "number" && (latestStepIndex === null || obj.step_index > latestStepIndex)) {
+        latestStepIndex = obj.step_index;
+      }
+      if (typeof obj.content === "string" && obj.content.includes("<subagent_reminder>")) {
+        isSubagent = true;
+      }
       if (obj.type === "USER_INPUT") {
         userTurns++;
-        if (typeof obj.content === "string") {
-          const clean = obj.content
-            .replace(/<\/?USER_REQUEST>/gi, " ")
-            .replace(/\s+/g, " ")
-            .trim();
-          if (clean === "/compact") {
-            compactedSinceLastPlanner = true;
-          }
-          if (!firstUserText) {
+        const clean = extractUserRequestText(obj.content);
+        if (/^\/compact(?:\s|$)/i.test(clean)) {
+          compactedSinceLastPlanner = true;
+        } else {
+          realUserTurns++;
+          if (!firstUserText && clean) {
             firstUserText = clean.slice(0, 48);
           }
         }
       }
-      if (typeof obj.content === "string" && obj.content.includes("CHECKPOINT: Resuming from a compaction")) {
+      const isCheckpoint =
+        obj.type === "CHECKPOINT" ||
+        (typeof obj.content === "string" &&
+          (obj.content.includes("Resuming from a compaction") ||
+            obj.content.includes("CHECKPOINT: Resuming from a compaction")));
+      if (isCheckpoint) {
         compactions++;
         compactedSinceLastPlanner = true;
+        const cpTokens =
+          (Number(obj.input_tokens) || 0) +
+          (Number(obj.cache_read_tokens) || 0) +
+          (Number(obj.output_tokens) || 0);
+        lastCheckpoint = {
+          stepIndex: typeof obj.step_index === "number" ? obj.step_index : null,
+          tokens: cpTokens,
+          contentLen: typeof obj.content === "string" ? obj.content.length : 0,
+        };
       }
       if (obj.type === "PLANNER_RESPONSE") {
         compactedSinceLastPlanner = false;
@@ -448,16 +530,55 @@ function parseTranscriptFast(convId, windowSize) {
         };
       }
     }
-    rawStats = { latestPlanner, prevPlanner, userTurns, compactions, firstUserText, compactedSinceLastPlanner };
-    transcriptCache.set(convId, { mtimeMs: st.mtimeMs, parsed: rawStats });
+    rawStats = {
+      latestPlanner,
+      prevPlanner,
+      lastCheckpoint,
+      latestStepIndex,
+      userTurns,
+      realUserTurns,
+      compactions,
+      firstUserText,
+      compactedSinceLastPlanner,
+      isSubagent,
+    };
+    transcriptCache.set(convId, { mtimeMs: st.mtimeMs, size: st.size, parsed: rawStats });
   }
 
-  const { latestPlanner, prevPlanner, userTurns, compactions, firstUserText, compactedSinceLastPlanner } = rawStats;
-  const totalTokens = latestPlanner ? latestPlanner.contextTokens : 0;
-  const deltaTokens =
-    latestPlanner && prevPlanner ? latestPlanner.contextTokens - prevPlanner.contextTokens : 0;
-
+  const {
+    latestPlanner,
+    prevPlanner,
+    lastCheckpoint,
+    latestStepIndex,
+    userTurns,
+    realUserTurns,
+    compactions,
+    firstUserText,
+    compactedSinceLastPlanner,
+    isSubagent,
+  } = rawStats;
   const env = getEnvOverhead();
+  const envBaseTokens =
+    env.systemPromptTokens + env.memoryTokens + env.skillsTokens + env.mcpActiveTokens + env.systemToolsTokens;
+  const rawPlannerTokens = latestPlanner ? latestPlanner.contextTokens : 0;
+
+  let totalTokens = rawPlannerTokens;
+  if (compactedSinceLastPlanner) {
+    if (lastCheckpoint && lastCheckpoint.tokens > 0 && (!rawPlannerTokens || lastCheckpoint.tokens < rawPlannerTokens * 0.6)) {
+      totalTokens = lastCheckpoint.tokens;
+    } else if (lastCheckpoint) {
+      const est = envBaseTokens + Math.max(1500, Math.round(lastCheckpoint.contentLen / 4));
+      totalTokens = rawPlannerTokens > 0 ? Math.min(rawPlannerTokens, est) : est;
+    } else {
+      // /compact USER_INPUT seen while compaction is in progress or awaiting checkpoint
+      totalTokens = rawPlannerTokens > 0 ? Math.min(rawPlannerTokens, envBaseTokens + 2000) : envBaseTokens;
+    }
+  }
+  const deltaTokens =
+    !compactedSinceLastPlanner && latestPlanner && prevPlanner
+      ? latestPlanner.contextTokens - prevPlanner.contextTokens
+      : 0;
+
   // Allocate real overhead up to totalTokens so sum === totalTokens
   let rem = totalTokens;
   const take = (n) => {
@@ -495,13 +616,16 @@ function parseTranscriptFast(convId, windowSize) {
     found: true,
     relPath,
     totalTokens,
+    rawPlannerTokens,
     percentage: pct,
     deltaTokens,
     model: latestPlanner?.model || null,
     stepIndex: latestPlanner?.stepIndex ?? null,
+    latestStepIndex,
     compactedSinceLastPlanner: Boolean(compactedSinceLastPlanner),
+    isSubagent: Boolean(isSubagent),
     firstUserText,
-    stats: { userTurns, compactions },
+    stats: { userTurns, realUserTurns, compactions },
     categories,
     deferred,
     details: {
@@ -515,10 +639,14 @@ function parseTranscriptFast(convId, windowSize) {
   };
 }
 
+let compactStateMtime = 0;
+
 function loadCompactState() {
   const map = new Map();
   try {
     if (fs.existsSync(COMPACT_STATE_PATH)) {
+      const st = fs.statSync(COMPACT_STATE_PATH);
+      compactStateMtime = st.mtimeMs;
       const obj = JSON.parse(fs.readFileSync(COMPACT_STATE_PATH, "utf-8"));
       if (obj && typeof obj === "object") {
         for (const [k, v] of Object.entries(obj)) {
@@ -536,28 +664,70 @@ function saveCompactState(map) {
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
     const entries = Array.from(map.entries()).slice(-50);
-    fs.writeFileSync(COMPACT_STATE_PATH, JSON.stringify(Object.fromEntries(entries), null, 2), "utf-8");
+    const tmp = `${COMPACT_STATE_PATH}.tmp.${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(entries), null, 2), "utf-8");
+    fs.renameSync(tmp, COMPACT_STATE_PATH);
+    compactStateMtime = fs.statSync(COMPACT_STATE_PATH).mtimeMs;
   } catch {}
 }
 
-const compactState = loadCompactState();
+let compactState = loadCompactState();
+
+function syncCompactStateFromDisk() {
+  try {
+    if (!fs.existsSync(COMPACT_STATE_PATH)) return;
+    const st = fs.statSync(COMPACT_STATE_PATH);
+    if (st.mtimeMs > compactStateMtime) {
+      compactState = loadCompactState();
+    }
+  } catch {}
+}
 
 function setCompactState(convId, entry) {
+  syncCompactStateFromDisk();
   compactState.set(convId, entry);
   saveCompactState(compactState);
 }
 
-async function triggerCompact(convId, stepIndex, reason = "manual") {
+const AUTO_COMPACT_COOLDOWN_MS = 180000;
+
+async function triggerCompact(convId, stepIndex, reason = "manual", meta = {}) {
   if (!isValidId(convId)) return { ok: false, error: "Invalid conversationId" };
+  syncCompactStateFromDisk();
   const prev = compactState.get(convId);
   if (prev?.status === "running") {
     return { ok: false, error: "Compaction already in progress" };
+  }
+  if (reason !== "manual") {
+    // Re-read transcript right before dispatching to prevent any stale-cache race.
+    transcriptCache.delete(convId);
+    const fresh = parseTranscriptFast(convId, 512000);
+    if (!fresh.found || fresh.isSubagent || fresh.compactedSinceLastPlanner) {
+      return { ok: false, error: "Skipped auto-compact (already compacted or subagent)" };
+    }
+    if (prev && prev.lastStep === fresh.stepIndex) {
+      return { ok: false, error: "Skipped auto-compact (step already compacted)" };
+    }
+    if (prev && prev.lastRealUserTurns === fresh.stats.realUserTurns) {
+      return { ok: false, error: "Skipped auto-compact (no new user turn since last compaction)" };
+    }
+    if (prev && prev.lastAt && Date.now() - prev.lastAt < AUTO_COMPACT_COOLDOWN_MS) {
+      return { ok: false, error: "Skipped auto-compact (cooldown active)" };
+    }
   }
   const lsAddr = normalizeLsAddr(process.env.ANTIGRAVITY_LS_ADDRESS);
   const csrf = process.env.ANTIGRAVITY_CSRF_TOKEN?.trim();
   if (!lsAddr) return { ok: false, error: "ANTIGRAVITY_LS_ADDRESS not set" };
 
-  setCompactState(convId, { status: "running", lastStep: stepIndex, lastAt: Date.now(), reason, error: null });
+  const realUserTurns = meta.realUserTurns ?? null;
+  setCompactState(convId, {
+    status: "running",
+    lastStep: stepIndex,
+    lastRealUserTurns: realUserTurns,
+    lastAt: Date.now(),
+    reason,
+    error: null,
+  });
   try {
     const resp = await fetch(`http://${lsAddr}/exa.language_server_pb.LanguageServerService/SendUserCascadeMessage`, {
       method: "POST",
@@ -583,23 +753,46 @@ async function triggerCompact(convId, stepIndex, reason = "manual") {
       signal: AbortSignal.timeout(15000),
     });
     if (resp.ok) {
-      setCompactState(convId, { status: "sent", lastStep: stepIndex, lastAt: Date.now(), reason, error: null });
+      setCompactState(convId, {
+        status: "sent",
+        lastStep: stepIndex,
+        lastRealUserTurns: realUserTurns,
+        lastAt: Date.now(),
+        reason,
+        error: null,
+      });
       return { ok: true };
     }
     const errText = await resp.text().catch(() => "");
     const msg = `HTTP ${resp.status}${errText ? `: ${errText.slice(0, 120)}` : ""}`;
-    setCompactState(convId, { status: "error", lastStep: stepIndex, lastAt: Date.now(), reason, error: msg });
+    setCompactState(convId, {
+      status: "error",
+      lastStep: stepIndex,
+      lastRealUserTurns: realUserTurns,
+      lastAt: Date.now(),
+      reason,
+      error: msg,
+    });
     return { ok: false, error: msg };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    setCompactState(convId, { status: "error", lastStep: stepIndex, lastAt: Date.now(), reason, error: msg });
+    setCompactState(convId, {
+      status: "error",
+      lastStep: stepIndex,
+      lastRealUserTurns: realUserTurns,
+      lastAt: Date.now(),
+      reason,
+      error: msg,
+    });
     return { ok: false, error: msg };
   }
 }
 
 function buildSnapshotSync(primaryConvId) {
   refreshLsConversations(false);
-  const rawList = cachedLsConvs.length > 0 ? cachedLsConvs : listBrainFallback();
+  syncCompactStateFromDisk();
+  const hasLiveLs = cachedLsConvs.length > 0;
+  const rawList = hasLiveLs ? cachedLsConvs : listBrainFallback();
 
   const selected = [];
   const seen = new Set();
@@ -637,27 +830,40 @@ function buildSnapshotSync(primaryConvId) {
     const runState = c.state?.runState || "RUN_STATE_IDLE";
     const isRunning = runState === "RUN_STATE_RUNNING";
     const prevRunState = prevRunStateMap.get(c.id);
-    prevRunStateMap.set(c.id, runState);
-    const justStopped = prevRunState === "RUN_STATE_RUNNING" && !isRunning;
+    if (hasLiveLs) {
+      prevRunStateMap.set(c.id, runState);
+    }
+    const justStopped = hasLiveLs && prevRunState === "RUN_STATE_RUNNING" && !isRunning;
+
+    const isSubagent = Boolean(
+      parsed.isSubagent ||
+        ws.isSubagent ||
+        c.metadata?.parentConversationId ||
+        (c.metadata?.rootConversationId && c.metadata.rootConversationId !== c.id)
+    );
 
     const cs = compactState.get(c.id) || null;
     const sameStepAlreadyCompacted = cs && cs.lastStep === parsed.stepIndex;
-    const inCooldown = cs && cs.lastAt && Date.now() - cs.lastAt < 120000;
-    const canAutoTrigger = justStopped || c.id === primaryConvId;
+    const sameUserTurnAlreadyCompacted = cs && cs.lastRealUserTurns === parsed.stats.realUserTurns;
+    const inCooldown = cs && cs.lastAt && Date.now() - cs.lastAt < AUTO_COMPACT_COOLDOWN_MS;
 
     if (
       settings.autoCompactEnabled &&
+      justStopped &&
       !isRunning &&
-      canAutoTrigger &&
+      !isSubagent &&
       parsed.found &&
       !parsed.compactedSinceLastPlanner &&
       parsed.totalTokens >= thresholdTokens &&
       parsed.stepIndex != null &&
       cs?.status !== "running" &&
       !sameStepAlreadyCompacted &&
+      !sameUserTurnAlreadyCompacted &&
       !inCooldown
     ) {
-      triggerCompact(c.id, parsed.stepIndex, justStopped ? "auto_on_idle" : "auto").catch(() => {});
+      triggerCompact(c.id, parsed.stepIndex, "auto_on_idle", {
+        realUserTurns: parsed.stats.realUserTurns,
+      }).catch(() => {});
     }
 
     return {
@@ -665,6 +871,7 @@ function buildSnapshotSync(primaryConvId) {
       shortId: c.id.slice(0, 8),
       title,
       isRunning,
+      isSubagent,
       runState,
       folderName: ws.folderName,
       folderPath: ws.folderPath,
@@ -688,13 +895,20 @@ function buildSnapshotSync(primaryConvId) {
 }
 
 function injectTokensIntoHtml(html, token, convId) {
-  if (!token) return html;
-  const qs = `token=${encodeURIComponent(token)}` + (convId ? `&conversationId=${encodeURIComponent(convId)}` : "");
-  return html.replace(/\b(href|src)=(["'])(\/[^"'\s>]*)\2/g, (m, attr, q, val) => {
-    if (val.startsWith("//")) return m;
-    const sep = val.includes("?") ? "&" : "?";
-    return `${attr}=${q}${val}${sep}${qs}${q}`;
-  });
+  let out = html;
+  if (token) {
+    const qs = `token=${encodeURIComponent(token)}` + (convId ? `&conversationId=${encodeURIComponent(convId)}` : "");
+    out = out.replace(/\b(href|src)=(["'])(\/[^"'\s>]*)\2/g, (m, attr, q, val) => {
+      if (val.startsWith("//")) return m;
+      const sep = val.includes("?") ? "&" : "?";
+      return `${attr}=${q}${val}${sep}${qs}${q}`;
+    });
+  }
+  const bootstrap = JSON.stringify({ token: token || "", conversationId: convId || "" }).replace(/</g, "\\u003c");
+  return out.replace(
+    "</head>",
+    `  <script>window.__SIDECAR_BOOTSTRAP__=${bootstrap};</script>\n</head>`
+  );
 }
 
 function readJsonBody(req) {
@@ -735,8 +949,12 @@ function broadcastAll() {
 
 refreshLsConversations(true);
 setInterval(() => {
-  if (sseClients.size > 0) broadcastAll();
-}, 1000).unref();
+  if (sseClients.size > 0) {
+    broadcastAll();
+  } else if (settings.autoCompactEnabled) {
+    refreshLsConversations(false);
+  }
+}, 1500).unref();
 
 const NO_CACHE = {
   "Cache-Control": "no-store, no-cache, must-revalidate",
@@ -781,7 +999,7 @@ const server = http.createServer(async (req, res) => {
   if (pathname === "/" || pathname === "/ui.html") {
     try {
       let html = fs.readFileSync(UI_HTML_PATH, "utf-8");
-      html = injectTokensIntoHtml(html, reqToken || TOKEN, convId);
+      html = injectTokensIntoHtml(html, reqToken, convId);
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...NO_CACHE });
       res.end(html);
     } catch (err) {
@@ -792,7 +1010,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === "/api/context") {
-    refreshLsConversations(false);
+    const p = refreshLsConversations(false);
+    if (cachedLsConvs.length === 0 && p) {
+      await Promise.race([p, new Promise((r) => setTimeout(r, 800))]);
+    }
     const snap = buildSnapshotSync(convId);
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", ...NO_CACHE });
     res.end(JSON.stringify(snap));
@@ -833,7 +1054,9 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const parsed = parseTranscriptFast(targetId, target.windowSize || 512000);
-    const result = await triggerCompact(targetId, parsed.stepIndex, "manual");
+    const result = await triggerCompact(targetId, parsed.stepIndex, "manual", {
+      realUserTurns: parsed.stats.realUserTurns,
+    });
     broadcastAll();
     res.writeHead(result.ok ? 200 : 400, { "Content-Type": "application/json; charset=utf-8", ...NO_CACHE });
     res.end(JSON.stringify(result));
@@ -853,8 +1076,20 @@ const server = http.createServer(async (req, res) => {
 
     const client = { res, convId, lastSerialized: serialized };
     sseClients.add(client);
-    const cleanup = () => sseClients.delete(client);
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      clearTimeout(maxLifeTimer);
+      sseClients.delete(client);
+      if (!res.writableEnded && !res.destroyed) {
+        try { res.end(); } catch {}
+      }
+    };
+    const maxLifeTimer = setTimeout(cleanup, 30000);
+    maxLifeTimer.unref();
     req.on("close", cleanup);
+    res.on("close", cleanup);
     res.on("error", cleanup);
     return;
   }
