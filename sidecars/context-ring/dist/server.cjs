@@ -533,7 +533,7 @@ function buildSnapshotSync(primaryConvId) {
     if (c.state?.runState === "RUN_STATE_RUNNING") add(c);
   }
   for (const c of rawList) {
-    if (selected.length >= 6) break;
+    if (selected.length >= 20) break;
     add(c);
   }
 
