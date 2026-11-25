@@ -516,8 +516,10 @@
       <span class="settings-label">Context Window</span>
       <div class="auto-controls">
         <div class="seg-group" id="windowGroup">
+          <button type="button" class="seg-btn" data-win="0">Auto</button>
           <button type="button" class="seg-btn" data-win="256000">256K</button>
           <button type="button" class="seg-btn" data-win="512000">512K</button>
+          <button type="button" class="seg-btn" data-win="840000">840K</button>
           <button type="button" class="seg-btn" data-win="1000000">1M</button>
         </div>
         <button id="refreshBtn" type="button" class="compact-btn" title="Refresh sessions now">↻</button>
@@ -911,7 +913,9 @@
           card = createCard(s);
           cardMap.set(s.id, card);
         }
-        updateCard(card, s, settings.windowSize, thresholdTokens, settings.autoCompactThresholdPct);
+        const sWin = s.windowSize || settings.windowSize || 512000;
+        const sThresh = s.thresholdTokens || Math.round(sWin * (settings.autoCompactThresholdPct / 100));
+        updateCard(card, s, sWin, sThresh, settings.autoCompactThresholdPct);
         sessionsList.appendChild(card);
       });
     }

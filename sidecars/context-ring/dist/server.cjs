@@ -20,10 +20,20 @@ const DATA_DIR = path.join(getAppDataDir(), "sidecar_data", "claude-context-ring
 const SETTINGS_PATH = path.join(DATA_DIR, "settings.json");
 
 const DEFAULT_SETTINGS = {
-  windowSize: 256000,
+  windowSize: 0, // 0 = Auto (model-aware real AGY max_token_limit: 512K Gemini 4, 840K Claude 5.5, 256K Gemini 3.8, etc.)
   autoCompactEnabled: false,
   autoCompactThresholdPct: 60,
 };
+
+function getRealModelWindow(modelName) {
+  const m = String(modelName || "").toLowerCase();
+  if (m.includes("claude-opus-5-5") || m.includes("claude-sonnet-5-5")) return 840000;
+  if (m.includes("gemini-4") || m.includes("orchestrator") || m.includes("worker-agy")) return 512000;
+  if (m.includes("gemini-3.8") || m.includes("gemini-3.5")) return 256000;
+  if (m.includes("gemini-2.5")) return 128000;
+  if (m.includes("gpt-oss")) return 80000;
+  return 512000; // default for current AGY Gemini 4 models
+}
 
 function getAppDataDir() {
   const envDir = process.env.ANTIGRAVITY_APP_DATA_DIR?.trim();
@@ -40,7 +50,7 @@ function loadSettings() {
     if (fs.existsSync(SETTINGS_PATH)) {
       const parsed = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf-8"));
       return {
-        windowSize: [256000, 512000, 1000000].includes(Number(parsed.windowSize))
+        windowSize: [0, 256000, 512000, 840000, 1000000].includes(Number(parsed.windowSize))
           ? Number(parsed.windowSize)
           : DEFAULT_SETTINGS.windowSize,
         autoCompactEnabled: Boolean(parsed.autoCompactEnabled),
@@ -503,14 +513,48 @@ async function triggerCompact(convId, stepIndex, reason = "manual") {
   if (prev?.status === "running") {
     return { ok: false, error: "Compaction already in progress" };
   }
+  const lsAddr = normalizeLsAddr(process.env.ANTIGRAVITY_LS_ADDRESS);
+  const csrf = process.env.ANTIGRAVITY_CSRF_TOKEN?.trim();
+  if (!lsAddr) return { ok: false, error: "ANTIGRAVITY_LS_ADDRESS not set" };
+
   compactState.set(convId, { status: "running", lastStep: stepIndex, lastAt: Date.now(), reason, error: null });
-  const res = await runAgentApi(["send-message", "--title=Context Compaction", convId, "/compact"], 20000);
-  if (res.ok) {
-    compactState.set(convId, { status: "sent", lastStep: stepIndex, lastAt: Date.now(), reason, error: null });
-    return { ok: true };
+  try {
+    const resp = await fetch(`http://${lsAddr}/exa.language_server_pb.LanguageServerService/SendUserCascadeMessage`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(csrf ? { "x-antigravity-csrf-token": csrf } : {}),
+      },
+      body: JSON.stringify({
+        cascadeId: convId,
+        items: [
+          {
+            item: {
+              slashCommand: {
+                info: {
+                  name: "compact",
+                  type: "SLASH_COMMAND_TYPE_SYSTEM",
+                },
+              },
+            },
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (resp.ok) {
+      compactState.set(convId, { status: "sent", lastStep: stepIndex, lastAt: Date.now(), reason, error: null });
+      return { ok: true };
+    }
+    const errText = await resp.text().catch(() => "");
+    const msg = `HTTP ${resp.status}${errText ? `: ${errText.slice(0, 120)}` : ""}`;
+    compactState.set(convId, { status: "error", lastStep: stepIndex, lastAt: Date.now(), reason, error: msg });
+    return { ok: false, error: msg };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    compactState.set(convId, { status: "error", lastStep: stepIndex, lastAt: Date.now(), reason, error: msg });
+    return { ok: false, error: msg };
   }
-  compactState.set(convId, { status: "error", lastStep: stepIndex, lastAt: Date.now(), reason, error: res.error || "Failed" });
-  return { ok: false, error: res.error || "Failed to send /compact" };
 }
 
 function buildSnapshotSync(primaryConvId) {
@@ -537,11 +581,12 @@ function buildSnapshotSync(primaryConvId) {
     add(c);
   }
 
-  const thresholdTokens = Math.round(settings.windowSize * (settings.autoCompactThresholdPct / 100));
-
   const sessions = selected.map((c) => {
     const ws = ensureWorkspaceInfoAsync(c.id);
-    const parsed = parseTranscriptFast(c.id, settings.windowSize);
+    const rawMeta = parseTranscriptFast(c.id, 512000);
+    const effectiveWindow = settings.windowSize > 0 ? settings.windowSize : getRealModelWindow(rawMeta.model);
+    const parsed = parseTranscriptFast(c.id, effectiveWindow);
+    const thresholdTokens = Math.round(effectiveWindow * (settings.autoCompactThresholdPct / 100));
     const title =
       c.annotations?.title?.trim() ||
       c.state?.summary?.trim() ||
@@ -579,6 +624,8 @@ function buildSnapshotSync(primaryConvId) {
       branch: ws.branch,
       relPath: parsed.relPath,
       isCurrent: c.id === primaryConvId,
+      windowSize: effectiveWindow,
+      thresholdTokens,
       compactStatus: compactState.get(c.id) || null,
       ...parsed,
     };
@@ -586,7 +633,9 @@ function buildSnapshotSync(primaryConvId) {
 
   return {
     settings,
-    thresholdTokens,
+    thresholdTokens: settings.windowSize > 0
+      ? Math.round(settings.windowSize * (settings.autoCompactThresholdPct / 100))
+      : Math.round(512000 * (settings.autoCompactThresholdPct / 100)),
     primaryConvId: primaryConvId || (sessions[0]?.id ?? null),
     sessions,
   };
@@ -707,7 +756,7 @@ const server = http.createServer(async (req, res) => {
   if (pathname === "/api/settings" && req.method === "POST") {
     const body = await readJsonBody(req);
     const next = { ...settings };
-    if ([256000, 512000, 1000000].includes(Number(body.windowSize))) {
+    if ([0, 256000, 512000, 840000, 1000000].includes(Number(body.windowSize))) {
       next.windowSize = Number(body.windowSize);
     }
     if (typeof body.autoCompactEnabled === "boolean") {

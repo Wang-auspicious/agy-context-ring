@@ -18,10 +18,11 @@
     - **Memory files**: Active `AGENTS.md` rule files with expandable per-file token counts.
     - **MCP tools & deferred schemas**: Scans `~/.gemini/antigravity/mcp/<server>/*.json` for deferred tool counts and schema sizes, with an expandable per-server breakdown.
     - **Messages**: Remainder of real billed tokens after overhead, so the breakdown always sums to the exact session total.
-- **Idle-Guarded Auto-Compact & Window Scaling**
-  - Switchable context window scale (`256K` / `512K` / `1M`) and configurable auto-compact threshold (`50%`–`90%`, default `60%`), persisted in `~/.gemini/antigravity/sidecar_data/claude-context-ring/settings.json`.
+- **Idle-Guarded Auto-Compact & Model-Aware Window Scaling**
+  - Switchable context window scale (`Auto` | `256K` | `512K` | `840K` | `1M`) and configurable auto-compact threshold (`50%`–`90%`, default `60%`), persisted in `~/.gemini/antigravity/sidecar_data/claude-context-ring/settings.json`.
+  - In `Auto` mode, automatically uses Antigravity's real per-model compaction limits (`512K` for Gemini 4 Neon/Hydrogen/Carbon/Argon, `840K` for Claude Opus/Sonnet 5.5, `256K` for Gemini 3.8 Flash, `128K` for Gemini 2.5).
   - **Turn-safe compaction**: While an agent is actively running (`RUN_STATE_RUNNING`), the `Auto-compact` button is disabled (`cursor: not-allowed`) with a `"Cannot compact while the agent is running"` tooltip.
-  - When Auto-compact is enabled and a conversation exceeds the threshold, `/compact` is automatically dispatched via `agentapi send-message` **the moment the turn transitions to idle**.
+  - When Auto-compact is enabled and a conversation exceeds the threshold, `/compact` is automatically dispatched via `LanguageServerService/SendUserCascadeMessage` (`SLASH_COMMAND_TYPE_SYSTEM`) **the moment the turn transitions to idle**.
 - **One-Click History Path Copy**
   - Each session header displays its workspace folder pill (non-clickable) and `<shortId>.jsonl` pill. Clicking the `.jsonl` pill copies the relative path `.gemini/antigravity/brain/<conversationId>/.system_generated/logs/transcript.jsonl` to your clipboard.
 - **Zero External Dependencies**
