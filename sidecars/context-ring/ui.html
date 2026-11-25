@@ -380,10 +380,13 @@
   <div class="settings-bar">
     <div class="settings-row">
       <span class="settings-label">Context Window</span>
-      <div class="seg-group" id="windowGroup">
-        <button type="button" class="seg-btn" data-win="256000">256K</button>
-        <button type="button" class="seg-btn" data-win="512000">512K</button>
-        <button type="button" class="seg-btn" data-win="1000000">1M</button>
+      <div class="auto-controls">
+        <div class="seg-group" id="windowGroup">
+          <button type="button" class="seg-btn" data-win="256000">256K</button>
+          <button type="button" class="seg-btn" data-win="512000">512K</button>
+          <button type="button" class="seg-btn" data-win="1000000">1M</button>
+        </div>
+        <button id="refreshBtn" type="button" class="compact-btn" title="Refresh sessions now">↻</button>
       </div>
     </div>
     <div class="settings-row">
@@ -619,18 +622,37 @@
       });
     }
 
+    let eventSource = null;
+
+    async function fetchContextOnce() {
+      try {
+        const q = new URLSearchParams();
+        if (convId) q.set("conversationId", convId);
+        if (token) q.set("token", token);
+        const res = await fetch(`/api/context?${q.toString()}`, { cache: "no-store" });
+        if (res.ok) renderSnapshot(await res.json());
+      } catch {}
+    }
+
     function connectSSE() {
+      if (eventSource) eventSource.close();
       const q = new URLSearchParams();
       if (convId) q.set("conversationId", convId);
       if (token) q.set("token", token);
-      const es = new EventSource(`/api/events?${q.toString()}`);
-      es.onmessage = (ev) => {
+      eventSource = new EventSource(`/api/events?${q.toString()}`);
+      eventSource.onmessage = (ev) => {
         try {
           renderSnapshot(JSON.parse(ev.data));
         } catch {}
       };
     }
 
+    document.getElementById("refreshBtn").addEventListener("click", () => {
+      fetchContextOnce();
+      connectSSE();
+    });
+
+    fetchContextOnce();
     connectSSE();
   </script>
 </body>
