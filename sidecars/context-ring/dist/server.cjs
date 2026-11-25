@@ -211,7 +211,7 @@ function getEnvOverhead() {
 }
 
 let cachedLsConvs = [];
-let lsConvsFetching = false;
+let lsFetchPromise = null;
 let lastLsFetchAt = 0;
 const metadataCache = new Map();
 const transcriptCache = new Map();
@@ -260,35 +260,40 @@ function postJsonHttp(addr, pathStr, headers, bodyObj, timeoutMs = 2500) {
   });
 }
 
-async function refreshLsConversations(force = false) {
-  if (lsConvsFetching) return;
-  if (!force && Date.now() - lastLsFetchAt < 1200) return;
+function refreshLsConversations(force = false) {
+  if (lsFetchPromise) return lsFetchPromise;
+  if (!force && Date.now() - lastLsFetchAt < 1200) return Promise.resolve();
   const lsAddr = normalizeLsAddr(process.env.ANTIGRAVITY_LS_ADDRESS);
   const csrf = process.env.ANTIGRAVITY_CSRF_TOKEN?.trim();
-  if (!lsAddr) return;
-  lsConvsFetching = true;
-  try {
-    const res = await postJsonHttp(
-      lsAddr,
-      "/product.v1.ConversationService/ListConversations",
-      {
-        "Connect-Protocol-Version": "1",
-        ...(csrf ? { "x-antigravity-csrf-token": csrf } : {}),
-      },
-      { pageSize: 20, includeArchived: false },
-      2500
-    );
-    if (res.ok && Array.isArray(res.data?.conversations)) {
-      cachedLsConvs = res.data.conversations;
-      lastLsFetchAt = Date.now();
-      broadcastAll();
-    } else if (!res.ok) {
-      console.error("[claude-context-ring] ListConversations failed:", res.status || "", res.error || "");
+  if (!lsAddr) return Promise.resolve();
+
+  lsFetchPromise = (async () => {
+    try {
+      const res = await postJsonHttp(
+        lsAddr,
+        "/product.v1.ConversationService/ListConversations",
+        {
+          "Connect-Protocol-Version": "1",
+          ...(csrf ? { "x-antigravity-csrf-token": csrf } : {}),
+        },
+        { pageSize: 20, includeArchived: false },
+        2500
+      );
+      if (res.ok && Array.isArray(res.data?.conversations)) {
+        cachedLsConvs = res.data.conversations;
+        lastLsFetchAt = Date.now();
+        broadcastAll();
+      } else if (!res.ok) {
+        console.error("[claude-context-ring] ListConversations failed:", res.status || "", res.error || "");
+      }
+    } catch (e) {
+      console.error("[claude-context-ring] ListConversations exception:", e.message);
+    } finally {
+      lsFetchPromise = null;
     }
-  } catch (e) {
-    console.error("[claude-context-ring] ListConversations exception:", e.message);
-  }
-  lsConvsFetching = false;
+  })();
+
+  return lsFetchPromise;
 }
 
 function ensureWorkspaceInfoAsync(convId) {
