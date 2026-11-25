@@ -541,7 +541,9 @@
     </div>
   </div>
 
-  <div id="sessionsList" class="sessions-list"></div>
+  <div id="sessionsList" class="sessions-list">
+    <div class="popover-card loading-placeholder" style="padding:14px 16px;color:var(--cds-text-secondary);font-size:12px;">Loading Antigravity sessions…</div>
+  </div>
   <button id="showMoreBtn" type="button" class="show-more-btn" style="display:none"></button>
 
   <script>
@@ -873,6 +875,8 @@
     }
 
     function renderSnapshot(snap) {
+      const ph = sessionsList.querySelector(".loading-placeholder");
+      if (ph) ph.remove();
       const { settings, thresholdTokens, sessions } = snap;
 
       document.querySelectorAll("#windowGroup .seg-btn").forEach((btn) => {
@@ -920,8 +924,13 @@
         if (convId) q.set("conversationId", convId);
         if (token) q.set("token", token);
         const res = await fetch(`/api/context?${q.toString()}`, { cache: "no-store" });
-        if (res.ok) renderSnapshot(await res.json());
+        if (res.ok) {
+          renderSnapshot(await res.json());
+          return true;
+        }
       } catch {}
+      setTimeout(fetchContextOnce, 1000);
+      return false;
     }
 
     function connectSSE() {

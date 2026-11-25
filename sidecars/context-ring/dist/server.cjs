@@ -697,7 +697,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (pathname === "/api/context") {
-    await refreshLsConversations(false);
+    refreshLsConversations(false);
     const snap = buildSnapshotSync(convId);
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", ...NO_CACHE });
     res.end(JSON.stringify(snap));
