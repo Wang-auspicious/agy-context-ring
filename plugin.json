@@ -1,0 +1,6 @@
+{
+  "name": "claude-context-ring",
+  "displayName": "Claude Context Ring",
+  "description": "1:1 Claude Desktop context window ring and breakdown visualization for Antigravity conversations.",
+  "version": "1.0.0"
+}
