@@ -515,13 +515,7 @@
     <div class="settings-row">
       <span class="settings-label">Context Window</span>
       <div class="auto-controls">
-        <div class="seg-group" id="windowGroup">
-          <button type="button" class="seg-btn" data-win="0">Auto</button>
-          <button type="button" class="seg-btn" data-win="256000">256K</button>
-          <button type="button" class="seg-btn" data-win="512000">512K</button>
-          <button type="button" class="seg-btn" data-win="840000">840K</button>
-          <button type="button" class="seg-btn" data-win="1000000">1M</button>
-        </div>
+        <span id="windowAutoBadge" class="meta-pill tabular-nums" title="Always follows the active Antigravity model's real context limit">Auto (AGY)</span>
         <button id="refreshBtn" type="button" class="compact-btn" title="Refresh sessions now">↻</button>
       </div>
     </div>
@@ -565,6 +559,7 @@
     const token = params.get("token") || "";
 
     const sessionsList = document.getElementById("sessionsList");
+    const windowAutoBadge = document.getElementById("windowAutoBadge");
     const thresholdSelect = document.getElementById("thresholdSelect");
     const autoToggle = document.getElementById("autoToggle");
 
@@ -633,9 +628,6 @@
       }, 2000);
     }
 
-    document.querySelectorAll("#windowGroup .seg-btn").forEach((btn) => {
-      btn.addEventListener("click", () => updateSettings({ windowSize: Number(btn.dataset.win) }));
-    });
     thresholdSelect.addEventListener("change", () => {
       updateSettings({ autoCompactThresholdPct: Number(thresholdSelect.value) });
     });
@@ -881,14 +873,14 @@
       if (ph) ph.remove();
       const { settings, thresholdTokens, sessions } = snap;
 
-      document.querySelectorAll("#windowGroup .seg-btn").forEach((btn) => {
-        btn.classList.toggle("active", Number(btn.dataset.win) === settings.windowSize);
-      });
+      const primaryWin = sessions[0]?.windowSize;
+      windowAutoBadge.textContent = primaryWin ? `Auto · ${formatTokens(primaryWin).toUpperCase()}` : "Auto (AGY)";
       thresholdSelect.value = String(settings.autoCompactThresholdPct);
       autoToggle.checked = Boolean(settings.autoCompactEnabled);
 
-      const visible = showAllSessions ? sessions : sessions.slice(0, 6);
-      if (sessions.length > 6) {
+      const DEFAULT_VISIBLE = 5;
+      const visible = showAllSessions ? sessions : sessions.slice(0, DEFAULT_VISIBLE);
+      if (sessions.length > DEFAULT_VISIBLE) {
         showMoreBtn.style.display = "block";
         showMoreBtn.textContent = showAllSessions ? "Show fewer" : `Show all (${sessions.length})`;
       } else {

@@ -19,8 +19,10 @@ const UI_HTML_PATH = path.resolve(__dirname, "..", "ui.html");
 const DATA_DIR = path.join(getAppDataDir(), "sidecar_data", "claude-context-ring");
 const SETTINGS_PATH = path.join(DATA_DIR, "settings.json");
 
+const MAX_MANAGED_SESSIONS = 10;
+
 const DEFAULT_SETTINGS = {
-  windowSize: 0, // 0 = Auto (model-aware real AGY max_token_limit: 512K Gemini 4, 840K Claude 5.5, 256K Gemini 3.8, etc.)
+  windowSize: 0, // Always 0 = Auto (follows real AGY model max_token_limit)
   autoCompactEnabled: false,
   autoCompactThresholdPct: 60,
 };
@@ -50,9 +52,7 @@ function loadSettings() {
     if (fs.existsSync(SETTINGS_PATH)) {
       const parsed = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf-8"));
       return {
-        windowSize: [0, 256000, 512000, 840000, 1000000].includes(Number(parsed.windowSize))
-          ? Number(parsed.windowSize)
-          : DEFAULT_SETTINGS.windowSize,
+        windowSize: 0,
         autoCompactEnabled: Boolean(parsed.autoCompactEnabled),
         autoCompactThresholdPct:
           Number.isFinite(Number(parsed.autoCompactThresholdPct)) &&
@@ -574,17 +574,18 @@ function buildSnapshotSync(primaryConvId) {
     add(match || { id: primaryConvId, annotations: { title: "" }, state: { runState: "RUN_STATE_IDLE" } });
   }
   for (const c of rawList) {
+    if (selected.length >= MAX_MANAGED_SESSIONS) break;
     if (c.state?.runState === "RUN_STATE_RUNNING") add(c);
   }
   for (const c of rawList) {
-    if (selected.length >= 20) break;
+    if (selected.length >= MAX_MANAGED_SESSIONS) break;
     add(c);
   }
 
   const sessions = selected.map((c) => {
     const ws = ensureWorkspaceInfoAsync(c.id);
     const rawMeta = parseTranscriptFast(c.id, 512000);
-    const effectiveWindow = settings.windowSize > 0 ? settings.windowSize : getRealModelWindow(rawMeta.model);
+    const effectiveWindow = getRealModelWindow(rawMeta.model);
     const parsed = parseTranscriptFast(c.id, effectiveWindow);
     const thresholdTokens = Math.round(effectiveWindow * (settings.autoCompactThresholdPct / 100));
     const title =
@@ -631,11 +632,10 @@ function buildSnapshotSync(primaryConvId) {
     };
   });
 
+  const primaryWin = sessions[0]?.windowSize || 512000;
   return {
-    settings,
-    thresholdTokens: settings.windowSize > 0
-      ? Math.round(settings.windowSize * (settings.autoCompactThresholdPct / 100))
-      : Math.round(512000 * (settings.autoCompactThresholdPct / 100)),
+    settings: { ...settings, windowSize: 0 },
+    thresholdTokens: Math.round(primaryWin * (settings.autoCompactThresholdPct / 100)),
     primaryConvId: primaryConvId || (sessions[0]?.id ?? null),
     sessions,
   };
@@ -755,10 +755,7 @@ const server = http.createServer(async (req, res) => {
 
   if (pathname === "/api/settings" && req.method === "POST") {
     const body = await readJsonBody(req);
-    const next = { ...settings };
-    if ([0, 256000, 512000, 840000, 1000000].includes(Number(body.windowSize))) {
-      next.windowSize = Number(body.windowSize);
-    }
+    const next = { ...settings, windowSize: 0 };
     if (typeof body.autoCompactEnabled === "boolean") {
       next.autoCompactEnabled = body.autoCompactEnabled;
     }
@@ -779,12 +776,17 @@ const server = http.createServer(async (req, res) => {
     await refreshLsConversations(true);
     const snap = buildSnapshotSync(convId);
     const target = snap.sessions.find((s) => s.id === targetId);
-    if (target?.isRunning) {
+    if (!target) {
+      res.writeHead(404, { "Content-Type": "application/json; charset=utf-8", ...NO_CACHE });
+      res.end(JSON.stringify({ ok: false, error: "Session is outside the top 10 managed histories" }));
+      return;
+    }
+    if (target.isRunning) {
       res.writeHead(409, { "Content-Type": "application/json; charset=utf-8", ...NO_CACHE });
       res.end(JSON.stringify({ ok: false, error: "Cannot compact while conversation is running" }));
       return;
     }
-    const parsed = parseTranscriptFast(targetId, settings.windowSize);
+    const parsed = parseTranscriptFast(targetId, target.windowSize || 512000);
     const result = await triggerCompact(targetId, parsed.stepIndex, "manual");
     broadcastAll();
     res.writeHead(result.ok ? 200 : 400, { "Content-Type": "application/json; charset=utf-8", ...NO_CACHE });
