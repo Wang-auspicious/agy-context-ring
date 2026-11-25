@@ -331,7 +331,6 @@
       width: 100%;
       height: 4px;
       border-radius: 9999px;
-      overflow: hidden;
       background-color: var(--cds-ref-tint);
       margin-bottom: 10px;
     }
@@ -340,6 +339,17 @@
       top: 0;
       bottom: 0;
       transition: inset-inline-start 300ms ease, width 300ms ease;
+    }
+    .meter-threshold {
+      position: absolute;
+      top: -2px;
+      bottom: -2px;
+      width: 0;
+      border-left: 1.5px dashed var(--cds-text-secondary);
+      opacity: 0.75;
+      pointer-events: none;
+      z-index: 2;
+      transition: inset-inline-start 300ms ease;
     }
 
     .breakdown-list { display: flex; flex-direction: column; }
@@ -777,12 +787,12 @@
       card.querySelector(".card-body-wrap").classList.toggle("collapsed", s.id !== activeExpandedId);
       card.querySelector(".popover-summary").textContent = summary;
 
-      // Meter bar: draw cat-1..cat-4 + autocompact_buffer
+      // Meter bar: draw actual used context categories (up to total %) + vertical dashed threshold marker
       const allCats = s.categories || [];
-      const barCats = allCats.filter((c) => c.tokens > 0 && c.colorKey !== "ref");
+      const barCats = allCats.filter((c) => c.tokens > 0 && c.name !== "autocompact_buffer" && c.colorKey !== "muted");
       let startPct = 0;
       const meterTrack = card.querySelector(".meter-track");
-      meterTrack.innerHTML = barCats
+      const segsHtml = barCats
         .map((c, idx) => {
           const w = Math.min(100 - startPct, (c.tokens / win) * 100);
           if (w <= 0) return "";
@@ -795,6 +805,8 @@
           return html;
         })
         .join("");
+      const threshMarkerPct = Math.max(0, Math.min(100, Number(thresholdPct) || 60));
+      meterTrack.innerHTML = `${segsHtml}<div class="meter-threshold" style="inset-inline-start:${threshMarkerPct}%" title="Auto-compact threshold (${threshMarkerPct}%)"></div>`;
 
       // Rows: all active categories + Free space + Deferred
       const bufferTokens = allCats.find((c) => c.name === "autocompact_buffer")?.tokens || 0;
