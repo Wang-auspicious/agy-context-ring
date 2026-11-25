@@ -238,7 +238,11 @@ function parseTranscriptFast(convId, windowSize) {
       if (obj.type === "USER_INPUT") {
         userTurns++;
         if (!firstUserText && typeof obj.content === "string") {
-          firstUserText = obj.content.replace(/\s+/g, " ").trim().slice(0, 48);
+          firstUserText = obj.content
+            .replace(/<\/?USER_REQUEST>/gi, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 48);
         }
       }
       if (typeof obj.content === "string" && obj.content.includes("CHECKPOINT: Resuming from a compaction")) {
