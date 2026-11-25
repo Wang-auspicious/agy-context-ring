@@ -31,6 +31,10 @@ function getAppDataDir() {
   return path.join(os.homedir(), ".gemini", "antigravity");
 }
 
+function getConfigDir() {
+  return path.join(os.homedir(), ".gemini", "config");
+}
+
 function loadSettings() {
   try {
     if (fs.existsSync(SETTINGS_PATH)) {
@@ -97,40 +101,193 @@ function runAgentApi(args, timeoutMs = 15000) {
   });
 }
 
+// Measure real AGY overhead (Skills, Memory/Rules, MCP deferred) cached for 30s
+let envCache = { ts: 0, data: null };
+function getEnvOverhead() {
+  if (envCache.data && Date.now() - envCache.ts < 30000) return envCache.data;
+
+  const appDir = getAppDataDir();
+  const cfgDir = getConfigDir();
+
+  // 1. Skills (only name + description are injected via progressive disclosure)
+  let skillsChars = 0;
+  let skillsCount = 0;
+  const skillRoots = [path.join(appDir, "builtin", "skills")];
+  const pluginsDir = path.join(cfgDir, "plugins");
+  if (fs.existsSync(pluginsDir)) {
+    try {
+      for (const p of fs.readdirSync(pluginsDir, { withFileTypes: true })) {
+        if (p.isDirectory()) skillRoots.push(path.join(pluginsDir, p.name, "skills"));
+      }
+    } catch {}
+  }
+  const customSkillsDir = path.join(cfgDir, "skills");
+  if (fs.existsSync(customSkillsDir)) skillRoots.push(customSkillsDir);
+
+  for (const root of skillRoots) {
+    if (!fs.existsSync(root)) continue;
+    try {
+      for (const s of fs.readdirSync(root, { withFileTypes: true })) {
+        if (!s.isDirectory()) continue;
+        const mdPath = path.join(root, s.name, "SKILL.md");
+        if (!fs.existsSync(mdPath)) continue;
+        const head = fs.readFileSync(mdPath, "utf-8").slice(0, 1200);
+        const fm = head.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+        if (fm) {
+          skillsChars += fm[1].length + 24;
+          skillsCount++;
+        }
+      }
+    } catch {}
+  }
+  const skillsTokens = Math.round(skillsChars / 4);
+
+  // 2. Memory / Rules files (AGENTS.md in plugins)
+  const memoryFiles = [];
+  let memoryTokens = 0;
+  if (fs.existsSync(pluginsDir)) {
+    try {
+      for (const p of fs.readdirSync(pluginsDir, { withFileTypes: true })) {
+        if (!p.isDirectory()) continue;
+        const rulePath = path.join(pluginsDir, p.name, "rules", "AGENTS.md");
+        if (fs.existsSync(rulePath)) {
+          const st = fs.statSync(rulePath);
+          const t = Math.max(1, Math.round(st.size / 4));
+          memoryTokens += t;
+          memoryFiles.push({ name: `${p.name}/rules/AGENTS.md`, tokens: t });
+        }
+      }
+    } catch {}
+  }
+
+  // 3. MCP deferred schemas (~/.gemini/antigravity/mcp/<server>/*.json)
+  const mcpDir = path.join(appDir, "mcp");
+  const mcpServers = [];
+  let mcpDeferredCount = 0;
+  let mcpDeferredBytes = 0;
+  if (fs.existsSync(mcpDir)) {
+    try {
+      for (const srv of fs.readdirSync(mcpDir, { withFileTypes: true })) {
+        if (!srv.isDirectory()) continue;
+        const srvDir = path.join(mcpDir, srv.name);
+        let srvBytes = 0;
+        let srvTools = 0;
+        for (const f of fs.readdirSync(srvDir)) {
+          if (f.endsWith(".json")) {
+            srvTools++;
+            srvBytes += fs.statSync(path.join(srvDir, f)).size;
+          }
+        }
+        mcpDeferredCount += srvTools;
+        mcpDeferredBytes += srvBytes;
+        if (srvTools > 0) {
+          mcpServers.push({ name: srv.name, count: srvTools, tokens: Math.round(srvBytes / 4) });
+        }
+      }
+    } catch {}
+  }
+  const mcpDeferredTokens = Math.round(mcpDeferredBytes / 4);
+  // Active MCP tool names list (~25 tokens per deferred tool name/server stub) + eager tools
+  const mcpActiveTokens = mcpDeferredCount * 22;
+
+  // 4. Built-in System tools & System prompt
+  const systemToolsTokens = 14800; // ~20 built-in AGY tool schemas
+  const systemPromptTokens = 4200; // base system instructions
+
+  const data = {
+    skillsTokens,
+    skillsCount,
+    memoryTokens,
+    memoryFiles,
+    mcpActiveTokens,
+    mcpDeferredTokens,
+    mcpDeferredCount,
+    mcpServers,
+    systemToolsTokens,
+    systemPromptTokens,
+  };
+  envCache = { ts: Date.now(), data };
+  return data;
+}
+
 let cachedLsConvs = [];
 let lsConvsFetching = false;
 let lastLsFetchAt = 0;
 const metadataCache = new Map();
 const transcriptCache = new Map();
-const prevRunStateMap = new Map(); // convId -> previous runState
+const prevRunStateMap = new Map();
+
+function normalizeLsAddr(raw) {
+  if (!raw) return "";
+  return raw.trim().replace(/^localhost:/i, "127.0.0.1:");
+}
+
+function postJsonHttp(addr, pathStr, headers, bodyObj, timeoutMs = 2500) {
+  return new Promise((resolve) => {
+    const [host, portStr] = addr.split(":");
+    const port = parseInt(portStr || "80", 10);
+    const payload = JSON.stringify(bodyObj);
+    const req = http.request(
+      {
+        host,
+        port,
+        path: pathStr,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+          ...headers,
+        },
+        timeout: timeoutMs,
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          try {
+            const text = Buffer.concat(chunks).toString("utf-8");
+            resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, data: JSON.parse(text) });
+          } catch (e) {
+            resolve({ ok: false, status: res.statusCode, error: e.message });
+          }
+        });
+      }
+    );
+    req.on("timeout", () => { req.destroy(); resolve({ ok: false, error: "timeout" }); });
+    req.on("error", (e) => resolve({ ok: false, error: e.message }));
+    req.write(payload);
+    req.end();
+  });
+}
 
 async function refreshLsConversations(force = false) {
   if (lsConvsFetching) return;
-  if (!force && Date.now() - lastLsFetchAt < 1500) return;
-  const lsAddr = process.env.ANTIGRAVITY_LS_ADDRESS?.trim();
+  if (!force && Date.now() - lastLsFetchAt < 1200) return;
+  const lsAddr = normalizeLsAddr(process.env.ANTIGRAVITY_LS_ADDRESS);
   const csrf = process.env.ANTIGRAVITY_CSRF_TOKEN?.trim();
   if (!lsAddr) return;
   lsConvsFetching = true;
   try {
-    const resp = await fetch(`http://${lsAddr}/product.v1.ConversationService/ListConversations`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
+    const res = await postJsonHttp(
+      lsAddr,
+      "/product.v1.ConversationService/ListConversations",
+      {
         "Connect-Protocol-Version": "1",
         ...(csrf ? { "x-antigravity-csrf-token": csrf } : {}),
       },
-      body: JSON.stringify({ pageSize: 20, includeArchived: false }),
-      signal: AbortSignal.timeout(2500),
-    });
-    if (resp.ok) {
-      const json = await resp.json();
-      if (Array.isArray(json.conversations)) {
-        cachedLsConvs = json.conversations;
-        lastLsFetchAt = Date.now();
-        broadcastAll();
-      }
+      { pageSize: 20, includeArchived: false },
+      2500
+    );
+    if (res.ok && Array.isArray(res.data?.conversations)) {
+      cachedLsConvs = res.data.conversations;
+      lastLsFetchAt = Date.now();
+      broadcastAll();
+    } else if (!res.ok) {
+      console.error("[claude-context-ring] ListConversations failed:", res.status || "", res.error || "");
     }
-  } catch {}
+  } catch (e) {
+    console.error("[claude-context-ring] ListConversations exception:", e.message);
+  }
   lsConvsFetching = false;
 }
 
@@ -192,7 +349,6 @@ function listBrainFallback() {
 }
 
 function parseTranscriptFast(convId, windowSize) {
-  // Expanded relative path without private user home (e.g. zjz65)
   const relPath = `.gemini/antigravity/brain/${convId}/.system_generated/logs/transcript.jsonl`;
   const fullPath = path.join(getAppDataDir(), "brain", convId, ".system_generated", "logs", "transcript.jsonl");
   let st;
@@ -210,6 +366,8 @@ function parseTranscriptFast(convId, windowSize) {
       firstUserText: "",
       stats: { userTurns: 0, compactions: 0 },
       categories: [],
+      deferred: [],
+      details: { mcpServers: [], memoryFiles: [], mcpTotalTokens: 0, mcpCount: 0, memoryTokens: 0, memoryCount: 0 },
     };
   }
 
@@ -269,12 +427,42 @@ function parseTranscriptFast(convId, windowSize) {
 
   const { latestPlanner, prevPlanner, userTurns, compactions, firstUserText } = rawStats;
   const totalTokens = latestPlanner ? latestPlanner.contextTokens : 0;
-  const cacheTokens = latestPlanner ? latestPlanner.cacheReadTokens : 0;
-  const inputTokens = latestPlanner ? latestPlanner.inputTokens : 0;
-  const outputTokens = latestPlanner ? latestPlanner.outputTokens : 0;
   const deltaTokens =
     latestPlanner && prevPlanner ? latestPlanner.contextTokens - prevPlanner.contextTokens : 0;
+
+  const env = getEnvOverhead();
+  // Allocate real overhead up to totalTokens so sum === totalTokens
+  let rem = totalTokens;
+  const take = (n) => {
+    const v = Math.min(rem, Math.max(0, n));
+    rem -= v;
+    return v;
+  };
+  const systemPromptTokens = take(env.systemPromptTokens);
+  const memoryTokens = take(env.memoryTokens);
+  const skillsTokens = take(env.skillsTokens);
+  const mcpActiveTokens = take(env.mcpActiveTokens);
+  const systemToolsTokens = take(env.systemToolsTokens);
+  const messagesTokens = rem; // remainder is actual conversation messages + tool outputs
+
+  const thresholdTokens = Math.round(windowSize * (settings.autoCompactThresholdPct / 100));
+  const bufferTokens = Math.max(0, windowSize - thresholdTokens);
   const pct = windowSize > 0 ? Math.round(Math.max(0, Math.min(1, totalTokens / windowSize)) * 100) : 0;
+
+  // Exact Claude Desktop category ordering & palette mapping
+  const categories = [
+    { name: "messages", display_name: "Messages", tokens: messagesTokens, colorKey: "cat-1" },
+    { name: "system_tools", display_name: "System tools", tokens: systemToolsTokens, colorKey: "cat-2" },
+    { name: "mcp_tools", display_name: "MCP tools", tokens: mcpActiveTokens, colorKey: "cat-3" },
+    { name: "skills", display_name: "Skills", tokens: skillsTokens, colorKey: "cat-4" },
+    { name: "system_prompt", display_name: "System prompt", tokens: systemPromptTokens, colorKey: "ref" },
+    { name: "memory_files", display_name: "Memory files", tokens: memoryTokens, colorKey: "ref" },
+    { name: "autocompact_buffer", display_name: "Autocompact buffer", tokens: bufferTokens, colorKey: "muted" },
+  ];
+
+  const deferred = [
+    { name: "mcp_deferred", display_name: "MCP tools (deferred)", tokens: env.mcpDeferredTokens, colorKey: "muted" },
+  ];
 
   return {
     found: true,
@@ -286,11 +474,16 @@ function parseTranscriptFast(convId, windowSize) {
     stepIndex: latestPlanner?.stepIndex ?? null,
     firstUserText,
     stats: { userTurns, compactions },
-    categories: [
-      { name: "cache_read", display_name: "Cached context", tokens: cacheTokens },
-      { name: "input", display_name: "Uncached input", tokens: inputTokens },
-      { name: "output", display_name: "Model output", tokens: outputTokens },
-    ],
+    categories,
+    deferred,
+    details: {
+      mcpServers: env.mcpServers,
+      memoryFiles: env.memoryFiles,
+      mcpTotalTokens: mcpActiveTokens + env.mcpDeferredTokens,
+      mcpCount: env.mcpDeferredCount,
+      memoryTokens: env.memoryTokens,
+      memoryCount: env.memoryFiles.length,
+    },
   };
 }
 
@@ -316,7 +509,6 @@ function buildSnapshotSync(primaryConvId) {
   refreshLsConversations(false);
   const rawList = cachedLsConvs.length > 0 ? cachedLsConvs : listBrainFallback();
 
-  // Always pin primaryConvId (current conversation) FIRST, then running, then recent
   const selected = [];
   const seen = new Set();
   const add = (c) => {
@@ -356,8 +548,6 @@ function buildSnapshotSync(primaryConvId) {
 
     const cs = compactState.get(c.id) || null;
 
-    // Claude-aligned auto-compact: NEVER interrupt an active turn;
-    // fire immediately when idle (or the instant a running turn stops) if >= threshold!
     if (
       settings.autoCompactEnabled &&
       !isRunning &&
@@ -529,6 +719,7 @@ const server = http.createServer(async (req, res) => {
   if (pathname === "/api/compact" && req.method === "POST") {
     const body = await readJsonBody(req);
     const targetId = (typeof body.conversationId === "string" ? body.conversationId.trim() : "") || convId;
+    await refreshLsConversations(true);
     const snap = buildSnapshotSync(convId);
     const target = snap.sessions.find((s) => s.id === targetId);
     if (target?.isRunning) {

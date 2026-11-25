@@ -6,11 +6,9 @@
   <title>Context Ring</title>
   <style>
     :root {
-      --cds-gray-0: #ffffff;
       --cds-gray-20: #f9f9f7;
       --cds-gray-200: #c2c2c2;
       --cds-gray-400: #878787;
-      --cds-gray-700: #383838;
       --cds-gray-900: #0b0b0b;
 
       --cds-surface-0: var(--cds-gray-20);
@@ -28,10 +26,14 @@
       --cds-fill-warning: #fbb315;
       --cds-fill-danger: #dc3c3d;
 
-      --cds-chart-categorical-1: #257de0;
-      --cds-chart-categorical-2: #f47230;
-      --cds-chart-categorical-3: #00b894;
-      --cds-chart-reference-tint: rgba(135, 135, 135, 0.15);
+      /* Exact Claude Desktop chart palette */
+      --cds-cat-1: #257de0;
+      --cds-cat-2: #f47230;
+      --cds-cat-3: #00b894;
+      --cds-cat-4: #f2a600;
+      --cds-ref: #878787;
+      --cds-muted: #c2c2c2;
+      --cds-ref-tint: rgba(135, 135, 135, 0.15);
 
       --cds-pill-bg: #f3f3f1;
       --cds-pill-bg-hover: #e7e7e3;
@@ -54,9 +56,12 @@
         --cds-shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.32), 0 2px 6px rgba(0, 0, 0, 0.2);
 
         --cds-fill-accent: #338ced;
-        --cds-chart-categorical-1: #338ced;
-        --cds-chart-categorical-2: #e76624;
-        --cds-chart-categorical-3: #00a888;
+        --cds-cat-1: #338ced;
+        --cds-cat-2: #e76624;
+        --cds-cat-3: #00a888;
+        --cds-cat-4: #d28e05;
+        --cds-ref: #878787;
+        --cds-muted: #50504d;
 
         --cds-pill-bg: rgba(255, 255, 255, 0.08);
         --cds-pill-bg-hover: rgba(255, 255, 255, 0.14);
@@ -194,13 +199,11 @@
       transition: box-shadow 180ms ease, background-color 180ms ease;
     }
 
-    /* Subtle visual distinction for the current conversation pinned #1 */
     .popover-card.is-current {
       background: color-mix(in srgb, var(--cds-fill-accent) 4%, var(--cds-surface-popover));
       box-shadow: var(--cds-shadow-popover), inset 0 0 0 1px color-mix(in srgb, var(--cds-fill-accent) 28%, var(--cds-ring-color));
     }
 
-    /* Clickable Session Header */
     .session-head {
       display: flex;
       align-items: center;
@@ -218,11 +221,14 @@
       flex-shrink: 0;
     }
 
-    .run-dot {
-      width: 6px;
-      height: 6px;
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .run-spinner {
+      width: 10px;
+      height: 10px;
+      border: 1.5px solid var(--cds-fill-accent);
+      border-top-color: transparent;
       border-radius: 999px;
-      background: #0aac23;
+      animation: spin 0.9s linear infinite;
       flex-shrink: 0;
     }
 
@@ -237,7 +243,6 @@
       text-overflow: ellipsis;
     }
 
-    /* Non-clickable Folder Pill */
     .folder-pill {
       background: var(--cds-pill-bg);
       color: var(--cds-text-secondary);
@@ -252,7 +257,6 @@
       pointer-events: none;
     }
 
-    /* Clickable JSONL Pill */
     .json-pill {
       border: none;
       background: var(--cds-pill-bg);
@@ -271,7 +275,6 @@
       color: var(--cds-text-primary);
     }
 
-    /* Ring Trigger */
     .ring-wrap {
       display: inline-flex;
       align-items: center;
@@ -295,9 +298,7 @@
       grid-template-rows: 0fr;
       opacity: 0;
     }
-    .card-body-inner {
-      overflow: hidden;
-    }
+    .card-body-inner { overflow: hidden; }
 
     .popover-header {
       display: flex;
@@ -309,7 +310,7 @@
     }
     .popover-summary { margin-left: auto; }
 
-    .popover-body { padding: 2px 14px 6px; }
+    .popover-body { padding: 2px 14px 4px; }
 
     .meter-track {
       position: relative;
@@ -317,7 +318,7 @@
       height: 4px;
       border-radius: 9999px;
       overflow: hidden;
-      background-color: var(--cds-chart-reference-tint);
+      background-color: var(--cds-ref-tint);
       margin-bottom: 10px;
     }
     .meter-seg {
@@ -352,12 +353,63 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .breakdown-name.muted { color: var(--cds-text-secondary); }
     .breakdown-tokens { color: var(--cds-text-muted); flex-shrink: 0; }
     .breakdown-pct {
       color: var(--cds-text-primary);
       flex-shrink: 0;
       width: 44px;
       text-align: right;
+    }
+    .breakdown-pct.muted { color: var(--cds-text-muted); }
+
+    /* Expandable > MCP tools & > Memory files sections */
+    .sub-group {
+      margin-top: 5px;
+    }
+    .sub-toggle {
+      width: 100%;
+      border: none;
+      background: transparent;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 0;
+      font-size: 12px;
+      color: var(--cds-text-secondary);
+      cursor: pointer;
+      text-align: left;
+    }
+    .sub-toggle:hover { color: var(--cds-text-primary); }
+    .sub-caret {
+      width: 10px;
+      height: 10px;
+      transition: transform 150ms ease;
+      flex-shrink: 0;
+    }
+    .sub-toggle.open .sub-caret { transform: rotate(90deg); }
+    .sub-label { flex: 1; }
+    .sub-tokens { color: var(--cds-text-muted); }
+    .sub-count { color: var(--cds-text-muted); width: 44px; text-align: right; }
+
+    .sub-items {
+      display: none;
+      padding-left: 15px;
+      margin-top: 2px;
+    }
+    .sub-items.open { display: block; }
+    .sub-item {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--cds-text-muted);
+      padding: 1px 0;
+      gap: 8px;
+    }
+    .sub-item-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .divider {
@@ -396,7 +448,7 @@
     }
     .compact-btn:hover:not(:disabled) { background: var(--cds-btn-bg-hover); }
     .compact-btn:disabled {
-      opacity: 0.38;
+      opacity: 0.35;
       color: var(--cds-text-muted);
       cursor: not-allowed;
     }
@@ -438,11 +490,14 @@
   <script>
     const RADIUS = 6;
     const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
-    const CAT_COLORS = [
-      "var(--cds-chart-categorical-1)",
-      "var(--cds-chart-categorical-2)",
-      "var(--cds-chart-categorical-3)",
-    ];
+    const COLOR_MAP = {
+      "cat-1": "var(--cds-cat-1)",
+      "cat-2": "var(--cds-cat-2)",
+      "cat-3": "var(--cds-cat-3)",
+      "cat-4": "var(--cds-cat-4)",
+      "ref": "var(--cds-ref)",
+      "muted": "var(--cds-muted)",
+    };
 
     const params = new URLSearchParams(window.location.search);
     const convId = params.get("conversationId") || "";
@@ -454,6 +509,7 @@
 
     let activeExpandedId = null;
     const cardMap = new Map();
+    const subExpandState = new Map(); // `${id}:mcp` | `${id}:mem` -> bool
 
     function stripDotZero(str) {
       return str.endsWith(".0") ? str.slice(0, -2) : str;
@@ -537,7 +593,7 @@
             <rect x="2.5" y="3" width="11" height="7.5" rx="1.2"/>
             <path d="M1.5 12.5h13"/>
           </svg>
-          <span class="run-dot" style="display:none" title="Running"></span>
+          <span class="run-spinner" style="display:none" title="Working (RUN_STATE_RUNNING)"></span>
           <span class="session-title"></span>
           <span class="folder-pill" style="display:none"></span>
           <button type="button" class="json-pill" title="Copy relative JSONL path"></button>
@@ -558,6 +614,7 @@
             <div class="popover-body">
               <div class="meter-track"></div>
               <div class="breakdown-list"></div>
+              <div class="sub-sections"></div>
             </div>
             <div class="divider"></div>
             <div class="compact-row">
@@ -597,7 +654,7 @@
 
     function updateCard(card, s, win, thresholdTokens, thresholdPct) {
       card.classList.toggle("is-current", Boolean(s.isCurrent));
-      card.querySelector(".run-dot").style.display = s.isRunning ? "inline-block" : "none";
+      card.querySelector(".run-spinner").style.display = s.isRunning ? "inline-block" : "none";
 
       const titleEl = card.querySelector(".session-title");
       titleEl.textContent = s.title;
@@ -634,42 +691,104 @@
       card.querySelector(".card-body-wrap").classList.toggle("collapsed", s.id !== activeExpandedId);
       card.querySelector(".popover-summary").textContent = summary;
 
-      const cats = (s.categories || []).filter((c) => c.tokens > 0).sort((a, b) => b.tokens - a.tokens);
+      // Meter bar: draw cat-1..cat-4 + autocompact_buffer
+      const allCats = s.categories || [];
+      const barCats = allCats.filter((c) => c.tokens > 0 && c.colorKey !== "ref");
       let startPct = 0;
       const meterTrack = card.querySelector(".meter-track");
-      meterTrack.innerHTML = cats
+      meterTrack.innerHTML = barCats
         .map((c, idx) => {
           const w = Math.min(100 - startPct, (c.tokens / win) * 100);
           if (w <= 0) return "";
           const seam = idx === 0 ? 0 : 1;
           const rS = idx === 0 ? 2 : 1;
-          const rE = idx === cats.length - 1 ? 2 : 1;
-          const html = `<div class="meter-seg" style="inset-inline-start:calc(${startPct}% + ${seam}px);width:max(2px,calc(${w}% - ${seam}px));background:${CAT_COLORS[idx % CAT_COLORS.length]};border-start-start-radius:${rS}px;border-end-start-radius:${rS}px;border-start-end-radius:${rE}px;border-end-end-radius:${rE}px"></div>`;
+          const rE = idx === barCats.length - 1 ? 2 : 1;
+          const color = COLOR_MAP[c.colorKey] || "var(--cds-cat-1)";
+          const html = `<div class="meter-seg" style="inset-inline-start:calc(${startPct}% + ${seam}px);width:max(2px,calc(${w}% - ${seam}px));background:${color};border-start-start-radius:${rS}px;border-end-start-radius:${rS}px;border-start-end-radius:${rE}px;border-end-end-radius:${rE}px"></div>`;
           startPct += w;
           return html;
         })
         .join("");
 
-      const freeTokens = Math.max(0, win - total);
+      // Rows: all active categories + Free space + Deferred
+      const bufferTokens = allCats.find((c) => c.name === "autocompact_buffer")?.tokens || 0;
+      const freeTokens = Math.max(0, win - total - bufferTokens);
       const freePct = ((freeTokens / win) * 100).toFixed(1);
-      const rowsHtml = cats
-        .map((c, idx) => {
+
+      let rowsHtml = allCats
+        .filter((c) => c.tokens > 0)
+        .map((c) => {
           const p = ((c.tokens / win) * 100).toFixed(1);
+          const color = COLOR_MAP[c.colorKey] || "var(--cds-ref)";
           return `<div class="breakdown-row">
-            <span class="breakdown-swatch" style="background:${CAT_COLORS[idx % CAT_COLORS.length]}"></span>
-            <span class="breakdown-name">${esc(c.display_name || c.name)}</span>
+            <span class="breakdown-swatch" style="background:${color}"></span>
+            <span class="breakdown-name">${esc(c.display_name)}</span>
             <span class="breakdown-tokens tabular-nums">${formatTokens(c.tokens)}</span>
             <span class="breakdown-pct tabular-nums">${p}%</span>
           </div>`;
         })
-        .join("") +
-        `<div class="breakdown-row">
-          <span class="breakdown-swatch" style="background:var(--cds-chart-reference-tint)"></span>
-          <span class="breakdown-name">Free space</span>
-          <span class="breakdown-tokens tabular-nums">${formatTokens(freeTokens)}</span>
-          <span class="breakdown-pct tabular-nums">${freePct}%</span>
+        .join("");
+
+      rowsHtml += `<div class="breakdown-row">
+        <span class="breakdown-swatch" style="background:var(--cds-ref-tint)"></span>
+        <span class="breakdown-name">Free space</span>
+        <span class="breakdown-tokens tabular-nums">${formatTokens(freeTokens)}</span>
+        <span class="breakdown-pct tabular-nums">${freePct}%</span>
+      </div>`;
+
+      (s.deferred || []).forEach((d) => {
+        if (d.tokens <= 0) return;
+        rowsHtml += `<div class="breakdown-row">
+          <span class="breakdown-swatch" style="background:var(--cds-muted)"></span>
+          <span class="breakdown-name muted">${esc(d.display_name)}</span>
+          <span class="breakdown-tokens tabular-nums">${formatTokens(d.tokens)}</span>
+          <span class="breakdown-pct muted tabular-nums">—</span>
         </div>`;
+      });
+
       card.querySelector(".breakdown-list").innerHTML = rowsHtml;
+
+      // Expandable > MCP tools & > Memory files
+      const details = s.details || {};
+      const subEl = card.querySelector(".sub-sections");
+      const mcpOpen = Boolean(subExpandState.get(`${s.id}:mcp`));
+      const memOpen = Boolean(subExpandState.get(`${s.id}:mem`));
+
+      subEl.innerHTML = `
+        <div class="sub-group">
+          <button type="button" class="sub-toggle ${mcpOpen ? "open" : ""}" data-sub="mcp">
+            <svg class="sub-caret" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 2.5L8 6l-3.5 3.5"/></svg>
+            <span class="sub-label">MCP tools</span>
+            <span class="sub-tokens tabular-nums">${formatTokens(details.mcpTotalTokens || 0)}</span>
+            <span class="sub-count tabular-nums">${details.mcpCount || 0}</span>
+          </button>
+          <div class="sub-items ${mcpOpen ? "open" : ""}">
+            ${(details.mcpServers || []).map((m) => `<div class="sub-item"><span class="sub-item-name">${esc(m.name)} (${m.count})</span><span class="tabular-nums">${formatTokens(m.tokens)}</span></div>`).join("")}
+          </div>
+        </div>
+        <div class="sub-group">
+          <button type="button" class="sub-toggle ${memOpen ? "open" : ""}" data-sub="mem">
+            <svg class="sub-caret" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 2.5L8 6l-3.5 3.5"/></svg>
+            <span class="sub-label">Memory files</span>
+            <span class="sub-tokens tabular-nums">${formatTokens(details.memoryTokens || 0)}</span>
+            <span class="sub-count tabular-nums">${details.memoryCount || 0}</span>
+          </button>
+          <div class="sub-items ${memOpen ? "open" : ""}">
+            ${(details.memoryFiles || []).map((f) => `<div class="sub-item"><span class="sub-item-name">${esc(f.name)}</span><span class="tabular-nums">${formatTokens(f.tokens)}</span></div>`).join("")}
+          </div>
+        </div>
+      `;
+
+      subEl.querySelectorAll(".sub-toggle").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const key = `${s.id}:${btn.dataset.sub}`;
+          const next = !subExpandState.get(key);
+          subExpandState.set(key, next);
+          btn.classList.toggle("open", next);
+          btn.nextElementSibling.classList.toggle("open", next);
+        });
+      });
 
       const untilAuto = Math.max(0, thresholdTokens - total);
       card.querySelector(".compact-hint").textContent =
@@ -680,7 +799,7 @@
       const cBtn = card.querySelector(".compact-btn");
       if (s.isRunning) {
         cBtn.disabled = true;
-        cBtn.title = "Conversation is running — disabled until turn finishes";
+        cBtn.title = "Conversation is working — cannot compact until turn finishes";
       } else if (cBtn.textContent === "Auto-compact") {
         cBtn.disabled = false;
         cBtn.title = "Run /compact on this conversation";
